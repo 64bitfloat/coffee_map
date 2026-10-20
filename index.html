@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Coffee Flavor Atlas | 珈琲味覚マッピング＆記録帳</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;600;700&family=Shippori+Mincho:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Header -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-icon" aria-hidden="true">
+        <svg viewBox="0 0 36 36" fill="none">
+          <circle cx="18" cy="18" r="16" stroke="currentColor" stroke-width="1.75" stroke-dasharray="3 2"/>
+          <path d="M18 2v32M2 18h32" stroke="currentColor" stroke-width="1.2" opacity="0.45"/>
+          <path d="M13.5 11.5C10.5 14 10 19.5 13 23.5C16 27.5 21.5 26.5 24 23C26.5 19.5 25.5 13.5 22 11C18.5 8.5 15 10 13.5 11.5Z" fill="currentColor" opacity="0.18"/>
+          <path d="M14 11c2.5 3.5 1.5 9.5 4 14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="22" cy="13" r="2.5" fill="#C88A4B"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-eyebrow">FIXED RECIPE TASTING COMPASS</div>
+        <h1 class="brand-title">珈琲味覚アトラス <span class="brand-sub">Coffee Flavor Map</span></h1>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <div id="sampleModeBadge" class="sample-badge" hidden>
+        <span class="sample-dot"></span>
+        <span>サンプルデータ表示中</span>
+        <button id="clearSampleBtn" class="btn-text-action" title="サンプルを消去して自分の記録だけにする">空にして始める</button>
+      </div>
+      <button id="loadSampleBtn" class="btn btn-ghost btn-sm" title="サンプルデータを読み込む">
+        サンプル読込
+      </button>
+      <button id="exportJsonBtn" class="btn btn-ghost btn-sm" title="記録データをJSONファイルとして保存">
+        書き出し (JSON)
+      </button>
+      <label class="btn btn-ghost btn-sm file-label" title="保存したJSONファイルを読み込む">
+        読み込み (JSON)
+        <input type="file" id="importJsonInput" accept=".json" hidden />
+      </label>
+      <button id="openLogModalBtn" class="btn btn-primary">
+        <span>＋ 今日の一杯を記録</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <main class="workspace">
+    <!-- Left / Center: Interactive 4-Quadrant Map Section -->
+    <section class="map-section">
+      <!-- Map Control Bar -->
+      <div class="map-controls-card">
+        <div class="axis-presets-row">
+          <span class="control-label">軸プリセット:</span>
+          <div class="preset-pills" id="axisPresets">
+            <button class="preset-pill active" data-x="acidity" data-y="bitterness">
+              フルーティ × ビター
+            </button>
+            <button class="preset-pill" data-x="balance_ab" data-y="body">
+              酸味⇔苦味 × コク（王道）
+            </button>
+            <button class="preset-pill" data-x="aftertaste" data-y="body">
+              余韻(キレ) × コク
+            </button>
+            <button class="preset-pill" data-x="aroma" data-y="sweetness">
+              華やかさ × 甘み
+            </button>
+            <button class="preset-pill" data-x="acidity" data-y="sweetness">
+              フルーティ × 甘み
+            </button>
+          </div>
+        </div>
+
+        <div class="axis-selectors-row">
+          <div class="axis-select-group">
+            <label for="xAxisSelect">横軸 (X):</label>
+            <select id="xAxisSelect" class="select-input">
+              <option value="acidity" selected>酸味・フルーティ (1〜10)</option>
+              <option value="bitterness">苦味・ビター (1〜10)</option>
+              <option value="sweetness">甘み (1〜10)</option>
+              <option value="body">コク・ボディ (1〜10)</option>
+              <option value="aroma">香り・華やかさ (1〜10)</option>
+              <option value="aftertaste">余韻・後味 (1:キレ ⇔ 10:余韻長)</option>
+              <option value="balance_ab">【合成軸】酸味(1) ⇔ 苦味(10)</option>
+            </select>
+          </div>
+
+          <button id="swapAxesBtn" class="btn-icon" title="縦軸と横軸を入れ替える" aria-label="縦軸と横軸を入れ替える">
+            ⇄
+          </button>
+
+          <div class="axis-select-group">
+            <label for="yAxisSelect">縦軸 (Y):</label>
+            <select id="yAxisSelect" class="select-input">
+              <option value="acidity">酸味・フルーティ (1〜10)</option>
+              <option value="bitterness" selected>苦味・ビター (1〜10)</option>
+              <option value="sweetness">甘み (1〜10)</option>
+              <option value="body">コク・ボディ (1〜10)</option>
+              <option value="aroma">香り・華やかさ (1〜10)</option>
+              <option value="aftertaste">余韻・後味 (1:キレ ⇔ 10:余韻長)</option>
+              <option value="balance_ab">【合成軸】酸味(1) ⇔ 苦味(10)</option>
+            </select>
+          </div>
+
+          <div class="divider-vertical"></div>
+
+          <div class="axis-select-group">
+            <label for="colorModeSelect">色分け:</label>
+            <select id="colorModeSelect" class="select-input">
+              <option value="roast" selected>焙煎度</option>
+              <option value="process">精製方法</option>
+              <option value="origin">産地(国名)</option>
+              <option value="rating">お気に入り度</option>
+            </select>
+          </div>
+
+          <div class="map-toggles">
+            <label class="toggle-chip" title="複数回飲んだ銘柄の『日々の評価のブレ幅（楕円と各回の点）』を透過表示します">
+              <input type="checkbox" id="showVarianceToggle" checked />
+              <span>日々のブレを透過表示</span>
+            </label>
+            <label class="toggle-chip" title="お気に入り度が高い銘柄の周辺にスイートスポット（好まれる領域）を表示します">
+              <input type="checkbox" id="showSweetSpotToggle" checked />
+              <span>好みゾーン表示</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Filter bar -->
+        <div class="filter-bar">
+          <div class="search-box">
+            <input type="search" id="searchBeanInput" placeholder="銘柄名・産地・メモで絞り込み..." />
+          </div>
+          <select id="filterOriginSelect" class="select-input select-sm">
+            <option value="">すべての産地</option>
+          </select>
+          <select id="filterRoastSelect" class="select-input select-sm">
+            <option value="">すべての焙煎度</option>
+            <option value="浅煎り">浅煎り</option>
+            <option value="中浅煎り">中浅煎り</option>
+            <option value="中煎り">中煎り</option>
+            <option value="中深煎り">中深煎り</option>
+            <option value="深煎り">深煎り</option>
+          </select>
+          <select id="filterProcessSelect" class="select-input select-sm">
+            <option value="">すべての精製方法</option>
+            <option value="ウォッシュト">ウォッシュト</option>
+            <option value="ナチュラル">ナチュラル</option>
+            <option value="ハニー">ハニー</option>
+            <option value="アナエロビック">アナエロビック</option>
+            <option value="その他">その他</option>
+          </select>
+          <div id="mapLegend" class="map-legend"></div>
+        </div>
+      </div>
+
+      <!-- Canvas Map Container -->
+      <div class="map-canvas-wrapper" id="mapWrapper">
+        <canvas id="flavorMapCanvas"></canvas>
+        <!-- Floating Tooltip on Hover -->
+        <div id="mapTooltip" class="map-tooltip" hidden></div>
+        <div class="map-footer-hint">
+          <span>💡 丸いプロットは<strong>複数回記録の平均位置</strong>、うっすら見える小さな点と楕円は<strong>日ごとの評価のブレ範囲</strong>です。クリックで詳細・再記録へ。</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Sidebar: Bean Inspector & Bean Catalog -->
+    <aside class="inspector-sidebar">
+      <!-- Selected Bean Detail Card -->
+      <div class="card inspector-card" id="beanInspectorCard">
+        <div id="inspectorEmptyState" class="empty-state">
+          <div class="empty-icon">☕</div>
+          <h3>銘柄を選択してください</h3>
+          <p>マップ上のプロット、または下の銘柄リストをクリックすると、6軸レーダーチャート（平均とブレ）や過去の記録履歴が表示されます。</p>
+        </div>
+
+        <div id="inspectorContent" hidden>
+          <div class="inspector-header">
+            <div class="inspector-badges" id="inspectorBadges"></div>
+            <h2 class="inspector-title" id="inspectorBeanName">—</h2>
+            <div class="inspector-meta" id="inspectorMeta">—</div>
+          </div>
+
+          <div class="inspector-actions">
+            <button id="logAgainBtn" class="btn btn-primary btn-block">
+              ☕ この銘柄で今日の一杯を追加記録
+            </button>
+          </div>
+
+          <!-- 6-Axis Radar Chart (Average + Individual Sessions) -->
+          <div class="radar-section">
+            <div class="section-subtitle-row">
+              <span class="section-subtitle">6軸フレーバープロファイル（平均＋各回の重なり）</span>
+              <span id="stabilityBadge" class="stability-badge"></span>
+            </div>
+            <div class="radar-canvas-box">
+              <canvas id="radarCanvas" width="280" height="240"></canvas>
+            </div>
+            <div class="score-pills-grid" id="inspectorScoreGrid"></div>
+          </div>
+
+          <!-- Past Logs History for this Bean -->
+          <div class="history-section">
+            <div class="section-subtitle-row">
+              <span class="section-subtitle" id="historyCountTitle">過去の記録履歴</span>
+            </div>
+            <div class="history-list" id="inspectorHistoryList"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bean List / Catalog Card -->
+      <div class="card catalog-card">
+        <div class="catalog-header">
+          <h3 class="catalog-title">登録銘柄一覧 <span id="beanCountBadge" class="count-pill">0</span></h3>
+          <select id="sortBeansSelect" class="select-input select-sm">
+            <option value="recent">最終記録が新しい順</option>
+            <option value="count">記録回数が多い順</option>
+            <option value="rating">お気に入り順</option>
+            <option value="name">銘柄名順</option>
+          </select>
+        </div>
+        <div class="bean-list" id="beanListContainer"></div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Modal: Add / Edit Tasting Log -->
+  <div class="modal-backdrop" id="logModalBackdrop" hidden>
+    <div class="modal-dialog" role="dialog" aria-labelledby="modalTitle" aria-modal="true">
+      <div class="modal-header">
+        <div>
+          <div class="modal-eyebrow" id="modalEyebrow">DAILY CUP LOGGING</div>
+          <h2 id="modalTitle" class="modal-title">今日の一杯を記録</h2>
+        </div>
+        <button id="closeModalBtn" class="btn-close" aria-label="閉じる">✕</button>
+      </div>
+
+      <form id="tastingLogForm" class="modal-body">
+        <input type="hidden" id="editLogId" value="" />
+
+        <!-- Quick Select Existing Bean Banner -->
+        <div class="quick-bean-selector">
+          <label for="existingBeanSelect" class="quick-label">
+            <span>🔄 過去に飲んだ銘柄から選ぶ（産地・焙煎度・前回の平均値を自動セット）:</span>
+          </label>
+          <select id="existingBeanSelect" class="select-input">
+            <option value="">＋ 新しい銘柄として入力する / 直接入力</option>
+          </select>
+        </div>
+
+        <!-- Basic Info Grid -->
+        <div class="form-grid-3">
+          <div class="form-field form-field-wide">
+            <label for="beanNameInput">銘柄名 <span class="req">*</span></label>
+            <input
+              type="text"
+              id="beanNameInput"
+              list="beanNameDatalist"
+              required
+              placeholder="例：エチオピア イルガチェフェ コンガ"
+              autocomplete="off"
+            />
+            <datalist id="beanNameDatalist"></datalist>
+          </div>
+
+          <div class="form-field">
+            <label for="logDateInput">日付 <span class="req">*</span></label>
+            <input type="date" id="logDateInput" required />
+          </div>
+        </div>
+
+        <div class="form-grid-3">
+          <div class="form-field">
+            <label for="originInput">産地 (国名) <span class="req">*</span></label>
+            <input
+              type="text"
+              id="originInput"
+              list="originDatalist"
+              required
+              placeholder="例：エチオピア"
+              autocomplete="off"
+            />
+            <datalist id="originDatalist"></datalist>
+            <div class="origin-quick-chips" id="originQuickChips"></div>
+          </div>
+
+          <div class="form-field">
+            <label for="roastSelect">焙煎度 <span class="req">*</span></label>
+            <select id="roastSelect" class="select-input" required>
+              <option value="浅煎り">浅煎り (Light)</option>
+              <option value="中浅煎り">中浅煎り (Cinnamon/High)</option>
+              <option value="中煎り" selected>中煎り (Medium/City)</option>
+              <option value="中深煎り">中深煎り (Full City)</option>
+              <option value="深煎り">深煎り (French/Italian)</option>
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label for="processSelect">精製方法</label>
+            <select id="processSelect" class="select-input">
+              <option value="ウォッシュト">ウォッシュト (水洗式)</option>
+              <option value="ナチュラル">ナチュラル (非水洗式)</option>
+              <option value="ハニー">ハニー (パルプドナチュラル)</option>
+              <option value="アナエロビック">アナエロビック (嫌気性発酵)</option>
+              <option value="その他">その他・ブレンド・不明</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 10-Point Flavor Sliders -->
+        <div class="sliders-panel">
+          <div class="sliders-header">
+            <h3>味覚イメージ数値（10段階評価）</h3>
+            <span class="sliders-hint" id="sliderAutoFillNotice">直感でスライダーを動かしてください（同じ銘柄は回数分の平均位置にマッピングされます）</span>
+          </div>
+
+          <div class="sliders-grid">
+            <!-- Acidity / Fruity -->
+            <div class="slider-item">
+              <div class="slider-top">
+                <label for="scoreAcidity">🍋 酸味・フルーティ</label>
+                <output id="valAcidity" class="score-badge">5</output>
+              </div>
+              <input type="range" id="scoreAcidity" min="1" max="10" step="1" value="5" />
+              <div class="slider-poles">
+                <span>1: 穏やか・少なめ</span>
+                <span>10: 鮮やか・果実味</span>
+              </div>
+            </div>
+
+            <!-- Bitterness -->
+            <div class="slider-item">
+              <div class="slider-top">
+                <label for="scoreBitterness">🍫 苦味・ビター</label>
+                <output id="valBitterness" class="score-badge">5</output>
+              </div>
+              <input type="range" id="scoreBitterness" min="1" max="10" step="1" value="5" />
+              <div class="slider-poles">
+                <span>1: 控えめ・優しい</span>
+                <span>10: 力強い・ダークカカオ</span>
+              </div>
+            </div>
+
+            <!-- Sweetness -->
+            <div class="slider-item">
+              <div class="slider-top">
+                <label for="scoreSweetness">🍯 甘み</label>
+                <output id="valSweetness" class="score-badge">5</output>
+              </div>
+              <input type="range" id="scoreSweetness" min="1" max="10" step="1" value="5" />
+              <div class="slider-poles">
+                <span>1: ドライ・すっきり</span>
+                <span>10: リッチな甘み・蜜感</span>
+              </div>
+            </div>
+
+            <!-- Body -->
+            <div class="slider-item">
+              <div class="slider-top">
+                <label for="scoreBody">🥃 コク・ボディ（質感）</label>
+                <output id="valBody" class="score-badge">5</output>
+              </div>
+              <input type="range" id="scoreBody" min="1" max="10" step="1" value="5" />
+              <div class="slider-poles">
+                <span>1: 軽やか・ティーライク</span>
+                <span>10: 重厚・とろみ・濃厚</span>
+              </div>
+            </div>
+
+            <!-- Aroma -->
+            <div class="slider-item">
+              <div class="slider-top">
+                <label for="scoreAroma">🌸 香り・華やかさ</label>
+                <output id="valAroma" class="score-badge">5</output>
+              </div>
+              <input type="range" id="scoreAroma" min="1" max="10" step="1" value="5" />
+              <div class="slider-poles">
+                <span>1: 落ち着き・ナッツ感</span>
+                <span>10: 華やか・アロマティック</span>
+              </div>
+            </div>
+
+            <!-- Aftertaste -->
+            <div class="slider-item">
+              <div class="slider-top">
+                <label for="scoreAftertaste">✨ 余韻・後味の長さ</label>
+                <output id="valAftertaste" class="score-badge">5</output>
+              </div>
+              <input type="range" id="scoreAftertaste" min="1" max="10" step="1" value="5" />
+              <div class="slider-poles">
+                <span>1: キレが良い・スッと消える</span>
+                <span>10: 余韻が長く続く</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Extra Impression & Memo -->
+        <div class="form-grid-2">
+          <div class="form-field">
+            <label>★ 今日のお気に入り度（好み）</label>
+            <div class="star-rating-group" id="starRatingGroup">
+              <button type="button" class="star-btn" data-rating="1">★</button>
+              <button type="button" class="star-btn" data-rating="2">★</button>
+              <button type="button" class="star-btn" data-rating="3">★</button>
+              <button type="button" class="star-btn" data-rating="4">★</button>
+              <button type="button" class="star-btn" data-rating="5">★</button>
+              <span id="ratingTextLabel" class="rating-text-label">4 / 5</span>
+            </div>
+            <input type="hidden" id="ratingInput" value="4" />
+          </div>
+
+          <div class="form-field">
+            <label for="tempChangeSelect">🌡️ 冷めてからの味の変化（任意）</label>
+            <select id="tempChangeSelect" class="select-input">
+              <option value="変化なし・安定">変化なし・最後まで安定</option>
+              <option value="冷めると甘み・果実味UP">冷めると甘み・果実味UP ✨</option>
+              <option value="冷めるとまろやかに">冷めると角が取れてまろやかに</option>
+              <option value="冷めると酸味が立つ">冷めると酸味が際立つ</option>
+              <option value="冷めると苦味・渋みが立つ">冷めると苦味・渋みが立つ</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-field">
+          <label for="memoInput">📝 一言メモ</label>
+          <input
+            type="text"
+            id="memoInput"
+            placeholder="例：ベリーとダークチョコのような余韻。冷めるとオレンジピールの甘みが強く出た。"
+          />
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" id="cancelModalBtn" class="btn btn-ghost">キャンセル</button>
+          <button type="submit" class="btn btn-primary btn-lg">記録してマップに反映</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
