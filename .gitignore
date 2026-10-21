@@ -1,0 +1,19 @@
+# Environment & Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Dependencies & Build
+node_modules/
+dist/
+build/
+
+# Logs & OS / Editor files
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~

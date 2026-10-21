@@ -9,6 +9,23 @@
 const STORAGE_KEY = 'coffee_flavor_atlas_logs_v1';
 const SAMPLE_FLAG_KEY = 'coffee_flavor_atlas_is_sample_v1';
 
+// セキュリティ上限設定（リソース枯渇・DoS対策）
+const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024; // ファイルサイズ上限: 5MB
+const MAX_IMPORT_RECORDS = 5000; // 最大ログ件数
+const MAX_CURVE_POINTS = 600; // 焙煎カーブ保持ポイント上限
+const MAX_RAW_ALOG_SAMPLES = 20000; // .alog 生配列の最大サンプル数
+
+function clampNumber(val, min, max, fallback = 0) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function sanitizeString(val, maxLen = 300, fallback = '') {
+  if (val === null || val === undefined) return fallback;
+  return String(val).trim().slice(0, maxLen);
+}
+
 // 合成焙煎カーブ生成ヘルパー（滑らかなArtisan特有の減衰RoR曲線とBT/ET曲線）
 function buildSyntheticRoastCurve({
   chargeTemp = 195,
@@ -20,43 +37,52 @@ function buildSyntheticRoastCurve({
   fcsTemp = 196,
   dropSec = 565,
   dropTemp = 207,
-}) {
-  const step = 10;
+} = {}) {
+  // 異常値・無限ループ（DoS）防止のためすべてのパラメータを現実的な範囲へクランプ
+  const safeDropSec = clampNumber(dropSec, 60, 3600, 565);
+  const safeTpTimeSec = clampNumber(tpTimeSec, 10, Math.max(20, safeDropSec - 30), 80);
+  const safeFcsSec = clampNumber(fcsSec, safeTpTimeSec + 10, safeDropSec, 470);
+  const safeChargeTemp = clampNumber(chargeTemp, 50, 320, 195);
+  const safeTpTemp = clampNumber(tpTemp, 40, 220, 102);
+  const safeFcsTemp = clampNumber(fcsTemp, 100, 250, 196);
+  const safeDropTemp = clampNumber(dropTemp, 120, 270, 207);
+
+  const step = Math.max(5, Math.ceil(safeDropSec / 180));
   const timex = [];
   const bt = [];
   const et = [];
   const ror = [];
 
-  const totalRiseTime = Math.max(60, dropSec - tpTimeSec);
-  const totalRiseTemp = Math.max(40, dropTemp - tpTemp);
+  const totalRiseTime = Math.max(60, safeDropSec - safeTpTimeSec);
+  const totalRiseTemp = Math.max(40, safeDropTemp - safeTpTemp);
 
-  const tRatioFcs = Math.max(0.1, Math.min(0.95, (fcsSec - tpTimeSec) / totalRiseTime));
-  const tempRatioFcs = Math.max(0.1, Math.min(0.98, (fcsTemp - tpTemp) / totalRiseTemp));
+  const tRatioFcs = Math.max(0.1, Math.min(0.95, (safeFcsSec - safeTpTimeSec) / totalRiseTime));
+  const tempRatioFcs = Math.max(0.1, Math.min(0.98, (safeFcsTemp - safeTpTemp) / totalRiseTemp));
   const gamma = Math.max(0.55, Math.min(0.92, Math.log(tempRatioFcs) / Math.log(tRatioFcs)));
 
-  for (let t = 0; t <= dropSec; t += step) {
+  for (let t = 0; t <= safeDropSec; t += step) {
     timex.push(t);
     let curBt;
-    if (t <= tpTimeSec) {
-      const u = t / Math.max(1, tpTimeSec);
-      curBt = tpTemp + (chargeTemp - tpTemp) * Math.pow(1 - u, 2.1);
+    if (t <= safeTpTimeSec) {
+      const u = t / Math.max(1, safeTpTimeSec);
+      curBt = safeTpTemp + (safeChargeTemp - safeTpTemp) * Math.pow(1 - u, 2.1);
     } else {
-      const u = (t - tpTimeSec) / totalRiseTime;
-      curBt = tpTemp + totalRiseTemp * Math.pow(u, gamma);
+      const u = (t - safeTpTimeSec) / totalRiseTime;
+      curBt = safeTpTemp + totalRiseTemp * Math.pow(u, gamma);
     }
     bt.push(Number(curBt.toFixed(2)));
-    const curEt = curBt + 34 * Math.exp(-t / (dropSec * 0.85)) + 12;
+    const curEt = curBt + 34 * Math.exp(-t / (safeDropSec * 0.85)) + 12;
     et.push(Number(curEt.toFixed(1)));
   }
 
   for (let i = 0; i < timex.length; i++) {
     const t = timex[i];
-    if (t < tpTimeSec) {
+    if (t < safeTpTimeSec) {
       ror.push(null);
     } else {
       const dtMin = (timex[i] - timex[Math.max(0, i - 1)]) / 60;
       const rawRor = dtMin > 0 ? (bt[i] - bt[Math.max(0, i - 1)]) / dtMin : 0;
-      const ramp = Math.min(1, (t - tpTimeSec) / 38);
+      const ramp = Math.min(1, (t - safeTpTimeSec) / 38);
       const smoothRor = rawRor * Math.pow(ramp, 0.8);
       ror.push(Number(Math.max(1.5, Math.min(22, smoothRor)).toFixed(2)));
     }
@@ -694,6 +720,129 @@ function cacheElements() {
   els.memoInput = document.getElementById('memoInput');
 }
 
+function sanitizeRoastCurve(rawCurve) {
+  if (!rawCurve || typeof rawCurve !== 'object' || !Array.isArray(rawCurve.timex)) return null;
+  const len = Math.min(rawCurve.timex.length, MAX_CURVE_POINTS);
+  if (len < 2) return null;
+  const timex = [];
+  const bt = [];
+  const et = [];
+  const ror = [];
+  for (let i = 0; i < len; i++) {
+    timex.push(clampNumber(rawCurve.timex[i], 0, 7200, i * 10));
+    bt.push(Number(clampNumber(rawCurve.bt?.[i], 0, 350, 150).toFixed(2)));
+    et.push(Number(clampNumber(rawCurve.et?.[i], 0, 450, 180).toFixed(1)));
+    const rVal = rawCurve.ror?.[i];
+    ror.push(
+      rVal === null || rVal === undefined || !Number.isFinite(Number(rVal))
+        ? null
+        : Number(clampNumber(rVal, -10, 60, 0).toFixed(2))
+    );
+  }
+  return { timex, bt, et, ror, smoothV3: Boolean(rawCurve.smoothV3) };
+}
+
+function sanitizeRoastProfile(rawRp) {
+  if (!rawRp || typeof rawRp !== 'object' || !rawRp.isHomeRoasted) return null;
+  const dropTemp = Number(clampNumber(rawRp.dropTemp, 120, 270, 206).toFixed(1));
+  const dtr = Number(clampNumber(rawRp.dtr, 1, 50, 16.0).toFixed(1));
+  const weightLoss = Number(clampNumber(rawRp.weightLoss, 1, 40, 14.5).toFixed(1));
+  const chargeTemp = Number(clampNumber(rawRp.chargeTemp, 50, 320, 195).toFixed(1));
+  const tpTimeSec = Math.round(clampNumber(rawRp.tpTimeSec, 10, 600, 78));
+  const tpTemp = Number(clampNumber(rawRp.tpTemp, 40, 220, 102).toFixed(1));
+  const dryEndSec = Math.round(clampNumber(rawRp.dryEndSec, 30, 1800, 270));
+  const dryEndTemp = Number(clampNumber(rawRp.dryEndTemp, 80, 230, 152).toFixed(1));
+  const dropSec = Math.round(clampNumber(rawRp.dropSec, 60, 3600, 560));
+  const fcsSec = Math.round(clampNumber(rawRp.fcsSec, 30, dropSec, 470));
+  const fcsTemp = Number(clampNumber(rawRp.fcsTemp, 100, 250, 196).toFixed(1));
+  const batchLabel = sanitizeString(
+    rawRp.batchLabel,
+    120,
+    `排出 ${dropTemp}℃ / DTR ${dtr}%`
+  );
+  const roastDate = sanitizeString(rawRp.roastDate, 32, '');
+  const sourceFile = sanitizeString(rawRp.sourceFile, 120, '');
+
+  const sanitizedCurve = sanitizeRoastCurve(rawRp.curve);
+  const curve =
+    sanitizedCurve ||
+    buildSyntheticRoastCurve({
+      chargeTemp,
+      tpTimeSec,
+      tpTemp,
+      dryEndSec,
+      dryEndTemp,
+      fcsSec,
+      fcsTemp,
+      dropSec,
+      dropTemp,
+    });
+
+  return {
+    isHomeRoasted: true,
+    batchLabel,
+    roastDate,
+    chargeTemp,
+    tpTimeSec,
+    tpTemp,
+    dryEndSec,
+    dryEndTemp,
+    fcsSec,
+    fcsTemp,
+    dropSec,
+    dropTemp,
+    dtr,
+    weightLoss,
+    sourceFile,
+    curve,
+  };
+}
+
+function sanitizeLogRecord(raw, idx = 0) {
+  if (!raw || typeof raw !== 'object') return null;
+  const beanName = sanitizeString(raw.beanName, 120, '');
+  if (!beanName) return null;
+
+  const allowedRoasts = ['浅煎り', '中浅煎り', '中煎り', '中深煎り', '深煎り'];
+  const roastCandidate = sanitizeString(raw.roast, 30, '中煎り');
+  const roast = allowedRoasts.includes(roastCandidate) ? roastCandidate : '中煎り';
+
+  const rawScores = raw.scores && typeof raw.scores === 'object' ? raw.scores : {};
+  const scores = {
+    acidity: Number(clampNumber(rawScores.acidity, 1, 10, 5).toFixed(1)),
+    bitterness: Number(clampNumber(rawScores.bitterness, 1, 10, 5).toFixed(1)),
+    sweetness: Number(clampNumber(rawScores.sweetness, 1, 10, 5).toFixed(1)),
+    body: Number(clampNumber(rawScores.body, 1, 10, 5).toFixed(1)),
+    aroma: Number(clampNumber(rawScores.aroma, 1, 10, 5).toFixed(1)),
+    aftertaste: Number(clampNumber(rawScores.aftertaste, 1, 10, 5).toFixed(1)),
+  };
+
+  return {
+    id: sanitizeString(raw.id, 80, `log-${Date.now()}-${idx}`),
+    beanName,
+    origin: sanitizeString(raw.origin, 80, '不明'),
+    roast,
+    process: sanitizeString(raw.process, 60, 'ウォッシュド'),
+    date: sanitizeString(raw.date, 20, new Date().toLocaleDateString('sv-SE')),
+    rating: Math.round(clampNumber(raw.rating, 1, 5, 4)),
+    tempNote: sanitizeString(raw.tempNote, 160, ''),
+    memo: sanitizeString(raw.memo, 500, ''),
+    scores,
+    roastProfile: sanitizeRoastProfile(raw.roastProfile),
+  };
+}
+
+function sanitizeLogsArray(rawList) {
+  if (!Array.isArray(rawList)) return [];
+  const result = [];
+  const limit = Math.min(rawList.length, MAX_IMPORT_RECORDS);
+  for (let i = 0; i < limit; i++) {
+    const clean = sanitizeLogRecord(rawList[i], i);
+    if (clean) result.push(clean);
+  }
+  return result;
+}
+
 function loadInitialData() {
   const saved = localStorage.getItem(STORAGE_KEY);
   const isSample = localStorage.getItem(SAMPLE_FLAG_KEY);
@@ -704,16 +853,18 @@ function loadInitialData() {
       // 旧サンプルデータ（[Batch #1]が別銘柄名に分かれていた版など）が残っていたら最新サンプルに自動更新
       const isOldSample =
         isSampleFlag &&
-        parsed.some((l) => String(l.id).startsWith('samp-')) &&
-        (!parsed.some((l) => l.roastProfile?.curve?.smoothV3) ||
-          parsed.some((l) => l.beanName.includes('[Batch')));
+        Array.isArray(parsed) &&
+        parsed.some((l) => String(l?.id).startsWith('samp-')) &&
+        (!parsed.some((l) => l?.roastProfile?.curve?.smoothV3) ||
+          parsed.some((l) => String(l?.beanName || '').includes('[Batch')));
 
-      if (isOldSample) {
+      const cleanLogs = sanitizeLogsArray(parsed);
+      if (isOldSample || cleanLogs.length === 0) {
         state.logs = JSON.parse(JSON.stringify(INITIAL_SAMPLE_LOGS));
         state.isSampleMode = true;
         saveToStorage();
       } else {
-        state.logs = parsed;
+        state.logs = cleanLogs;
         state.isSampleMode = isSampleFlag;
       }
     } catch (e) {
@@ -1145,12 +1296,18 @@ function bindEvents() {
 // Artisan (.alog) パーサー
 // ============================================================================
 function handleAlogFile(file) {
+  if (!file) return;
+  if (file.size > MAX_IMPORT_FILE_BYTES) {
+    alert('ファイルサイズが大きすぎます（上限 5MB）。');
+    els.alogFileInput.value = '';
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => {
     try {
       const profile = parseArtisanAlogContent(reader.result, file.name);
       applyRoastProfileToModal(profile);
-      els.alogStatusText.innerHTML = `<strong style="color:#2d5a3f">✓ ${escapeHtml(file.name)} を解析しました（排出 ${profile.dropTemp}℃ / DTR ${profile.dtr}%）</strong>`;
+      els.alogStatusText.innerHTML = `<strong style="color:#2d5a3f">✓ ${escapeHtml(file.name)} を解析しました（排出 ${escapeHtml(profile.dropTemp)}℃ / DTR ${escapeHtml(profile.dtr)}%）</strong>`;
     } catch (err) {
       alert('Artisan (.alog) ファイルの解析に失敗しました。手動で数値を入力することも可能です。');
     }
@@ -1176,19 +1333,20 @@ function parseArtisanAlogContent(rawText, fileName) {
     }
   }
 
-  if (!data || !Array.isArray(data.timex)) {
+  if (!data || !Array.isArray(data.timex) || data.timex.length === 0) {
     throw new Error('Invalid alog structure');
   }
 
-  const timex = data.timex.map(Number);
-  const etArr = (data.temp1 || []).map(Number);
-  const btArr = (data.temp2 || data.temp1 || []).map(Number);
+  const timex = data.timex.slice(0, MAX_RAW_ALOG_SAMPLES).map(Number);
+  const etArr = (data.temp1 || []).slice(0, MAX_RAW_ALOG_SAMPLES).map(Number);
+  const btArr = (data.temp2 || data.temp1 || []).slice(0, MAX_RAW_ALOG_SAMPLES).map(Number);
   const tidx = Array.isArray(data.timeindex) ? data.timeindex : [-1, 0, 0, 0, 0, 0, 0, 0];
 
-  const chargeIdx = tidx[0] >= 0 ? tidx[0] : 0;
-  const dryIdx = tidx[1] > 0 ? tidx[1] : Math.floor(timex.length * 0.45);
-  const fcsIdx = tidx[2] > 0 ? tidx[2] : Math.floor(timex.length * 0.78);
-  const dropIdx = tidx[6] > 0 ? tidx[6] : timex.length - 1;
+  const maxIdx = timex.length - 1;
+  const chargeIdx = tidx[0] >= 0 ? Math.min(maxIdx, tidx[0]) : 0;
+  const dryIdx = tidx[1] > 0 ? Math.min(maxIdx, tidx[1]) : Math.floor(timex.length * 0.45);
+  const fcsIdx = tidx[2] > 0 ? Math.min(maxIdx, tidx[2]) : Math.floor(timex.length * 0.78);
+  const dropIdx = tidx[6] > 0 ? Math.min(maxIdx, tidx[6]) : maxIdx;
 
   const tCharge = timex[chargeIdx] || 0;
   const chargeTemp = Number((btArr[chargeIdx] || 195).toFixed(1));
@@ -1236,7 +1394,7 @@ function parseArtisanAlogContent(rawText, fileName) {
     }
   }
 
-  return {
+  return sanitizeRoastProfile({
     isHomeRoasted: true,
     batchLabel: data.title ? `${data.title} (${dropTemp}℃)` : `排出 ${dropTemp}℃ / DTR ${dtr}%`,
     roastDate: data.roastisodate || '',
@@ -1253,7 +1411,7 @@ function parseArtisanAlogContent(rawText, fileName) {
     weightLoss,
     sourceFile: fileName,
     curve: { timex: cTime, bt: cBt, et: cEt, ror: cRor, smoothV3: true },
-  };
+  });
 }
 
 function extractAlogArraysRegex(raw) {
@@ -1897,7 +2055,7 @@ function handleCanvasMouseMove(e) {
     const yMeta = AXES_META[state.yAxis];
     const rp = hit.prof.roastProfile;
     const roastExtra = rp
-      ? `<div style="font-size:0.7rem;color:#f5b895;margin-top:2px;">🔥 ${escapeHtml(hit.prof.label)}｜排出 ${rp.dropTemp}℃ / DTR ${rp.dtr}%</div>`
+      ? `<div style="font-size:0.7rem;color:#f5b895;margin-top:2px;">🔥 ${escapeHtml(hit.prof.label)}｜排出 ${escapeHtml(rp.dropTemp)}℃ / DTR ${escapeHtml(rp.dtr)}%</div>`
       : '';
 
     els.mapTooltip.hidden = false;
@@ -1969,9 +2127,9 @@ function renderAllProfilesComparisonTable(allBeans) {
             ${escapeHtml(prof.label)}
           </td>
           <td>${escapeHtml(prof.roast)}</td>
-          <td class="num-cell">${rp ? `${rp.dropTemp}℃` : '—'}</td>
-          <td class="num-cell">${rp ? `${rp.dtr}%` : '—'}</td>
-          <td class="num-cell">${rp ? `${rp.weightLoss}%` : '—'}</td>
+          <td class="num-cell">${rp ? `${escapeHtml(rp.dropTemp)}℃` : '—'}</td>
+          <td class="num-cell">${rp ? `${escapeHtml(rp.dtr)}%` : '—'}</td>
+          <td class="num-cell">${rp ? `${escapeHtml(rp.weightLoss)}%` : '—'}</td>
           <td class="num-cell">${prof.count}回</td>
           <td class="num-cell" style="color:#c87d20;font-weight:700;">★${prof.displayRating}</td>
           <td class="num-cell">${prof.avgScores.acidity.toFixed(1)}</td>
@@ -2088,7 +2246,7 @@ function renderInspector() {
               ${idx === 0 ? '👑 ' : ''}${escapeHtml(p.label)}
             </td>
             <td>${escapeHtml(p.roast)}</td>
-            <td class="num-cell">${rp ? `${rp.dropTemp}℃ / ${rp.dtr}%` : '—'}</td>
+            <td class="num-cell">${rp ? `${escapeHtml(rp.dropTemp)}℃ / ${escapeHtml(rp.dtr)}%` : '—'}</td>
             <td class="num-cell" style="color:#c87d20;font-weight:700;">★${p.displayRating}</td>
             <td class="num-cell">${p.avgScores.acidity.toFixed(1)}</td>
             <td class="num-cell">${p.avgScores.bitterness.toFixed(1)}</td>
@@ -2158,19 +2316,19 @@ function renderInspector() {
     els.inspectorRoastSpecs.innerHTML = `
       <div class="roast-spec-pill">
         <span class="roast-spec-label">排出温度</span>
-        <span class="roast-spec-val">${rp.dropTemp ?? '—'}℃</span>
+        <span class="roast-spec-val">${escapeHtml(rp.dropTemp ?? '—')}℃</span>
       </div>
       <div class="roast-spec-pill">
         <span class="roast-spec-label">DTR (発達率)</span>
-        <span class="roast-spec-val">${rp.dtr ?? '—'}%</span>
+        <span class="roast-spec-val">${escapeHtml(rp.dtr ?? '—')}%</span>
       </div>
       <div class="roast-spec-pill">
         <span class="roast-spec-label">1ハゼ / 総時間</span>
-        <span class="roast-spec-val">${formatSecToMmSs(rp.fcsSec)} / ${formatSecToMmSs(rp.dropSec)}</span>
+        <span class="roast-spec-val">${escapeHtml(formatSecToMmSs(rp.fcsSec))} / ${escapeHtml(formatSecToMmSs(rp.dropSec))}</span>
       </div>
       <div class="roast-spec-pill">
         <span class="roast-spec-label">重量減少率</span>
-        <span class="roast-spec-val">${rp.weightLoss ?? '—'}%</span>
+        <span class="roast-spec-val">${escapeHtml(rp.weightLoss ?? '—')}%</span>
       </div>
     `;
   } else {
@@ -2185,7 +2343,8 @@ function renderInspector() {
 
   els.inspectorHistoryList.innerHTML = targetLogs
     .map((log) => {
-      const stars = '★'.repeat(log.rating || 4) + '☆'.repeat(5 - (log.rating || 4));
+      const safeRating = Math.round(clampNumber(log.rating, 1, 5, 4));
+      const stars = '★'.repeat(safeRating) + '☆'.repeat(5 - safeRating);
       const batchTag = log.roastProfile?.batchLabel
         ? `<span style="font-size:0.68rem;background:#fdede4;color:#9e3d1a;padding:1px 5px;border-radius:4px;">🔥 ${escapeHtml(log.roastProfile.batchLabel)}</span>`
         : '';
@@ -2202,12 +2361,12 @@ function renderInspector() {
           ${log.tempNote ? `<div style="font-size:0.7rem;color:#6f4225;font-weight:600;">🌡️ ${escapeHtml(log.tempNote)}</div>` : ''}
           ${log.memo ? `<div class="history-memo">${escapeHtml(log.memo)}</div>` : ''}
           <div class="history-mini-scores">
-            <span>酸:${log.scores.acidity}</span>
-            <span>苦:${log.scores.bitterness}</span>
-            <span>甘:${log.scores.sweetness}</span>
-            <span>コク:${log.scores.body}</span>
-            <span>香:${log.scores.aroma}</span>
-            <span>余韻:${log.scores.aftertaste}</span>
+            <span>酸:${escapeHtml(log.scores.acidity)}</span>
+            <span>苦:${escapeHtml(log.scores.bitterness)}</span>
+            <span>甘:${escapeHtml(log.scores.sweetness)}</span>
+            <span>コク:${escapeHtml(log.scores.body)}</span>
+            <span>香:${escapeHtml(log.scores.aroma)}</span>
+            <span>余韻:${escapeHtml(log.scores.aftertaste)}</span>
           </div>
         </div>
       `;
@@ -2264,7 +2423,11 @@ function drawRoastCurveCanvas(bean, activeProf, isCompareAllMode) {
       ? rp.curve
       : buildSyntheticRoastCurve(rp);
 
-  const maxTime = Math.max(600, ...(curve.timex || [600])) * 1.04;
+  const maxCurveSec = (curve.timex || []).reduce(
+    (acc, v) => (Number.isFinite(v) && v > acc ? v : acc),
+    600
+  );
+  const maxTime = Math.min(7200, maxCurveSec) * 1.04;
   const minTemp = 80;
   const maxTemp = 235;
   const maxRor = 24;
@@ -3009,18 +3172,25 @@ function exportJsonData() {
 function importJsonData(e) {
   const file = e.target.files?.[0];
   if (!file) return;
+  if (file.size > MAX_IMPORT_FILE_BYTES) {
+    alert('JSONファイルのサイズが大きすぎます（上限 5MB）。');
+    els.importJsonInput.value = '';
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => {
     try {
       const parsed = JSON.parse(reader.result);
       if (!Array.isArray(parsed)) throw new Error('Invalid format');
-      state.logs = parsed;
+      const cleanLogs = sanitizeLogsArray(parsed);
+      if (cleanLogs.length === 0) throw new Error('No valid records');
+      state.logs = cleanLogs;
       state.isSampleMode = false;
-      state.selectedBeanName = parsed[0]?.beanName || null;
+      state.selectedBeanName = cleanLogs[0]?.beanName || null;
       state.selectedProfileKey = null;
       saveToStorage();
       refreshAll();
-      alert(`${parsed.length}件の記録データを読み込みました。`);
+      alert(`${cleanLogs.length}件の記録データを安全に検証・読み込みました。`);
     } catch (err) {
       alert('JSONファイルの形式が正しくありません。');
     }
@@ -3051,7 +3221,8 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function hexToRgba(hex, alpha) {
