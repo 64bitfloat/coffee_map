@@ -679,8 +679,22 @@ function loadInitialData() {
   const isSample = localStorage.getItem(SAMPLE_FLAG_KEY);
   if (saved) {
     try {
-      state.logs = JSON.parse(saved);
-      state.isSampleMode = isSample === 'true';
+      const parsed = JSON.parse(saved);
+      const isSampleFlag = isSample === 'true';
+      // もし古いサンプルデータ（roastProfile未対応版）が残っていたら最新サンプルに自動更新する
+      const isOldSample =
+        isSampleFlag &&
+        parsed.some((l) => String(l.id).startsWith('samp-')) &&
+        !parsed.some((l) => l.roastProfile && l.roastProfile.isHomeRoasted);
+
+      if (isOldSample) {
+        state.logs = JSON.parse(JSON.stringify(INITIAL_SAMPLE_LOGS));
+        state.isSampleMode = true;
+        saveToStorage();
+      } else {
+        state.logs = parsed;
+        state.isSampleMode = isSampleFlag;
+      }
     } catch (e) {
       state.logs = JSON.parse(JSON.stringify(INITIAL_SAMPLE_LOGS));
       state.isSampleMode = true;
