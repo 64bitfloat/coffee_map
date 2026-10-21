@@ -729,6 +729,157 @@ body {
   border: 1px solid #e6b8a2;
 }
 
+/* Profile Switcher inside Bean Inspector */
+.profile-switcher-box {
+  background: #f9f1e6;
+  border: 1px solid #dec3a4;
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.65rem;
+  margin-bottom: 0.75rem;
+}
+
+.profile-switcher-header {
+  font-size: 0.71rem;
+  font-weight: 700;
+  color: #83381b;
+  margin-bottom: 0.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.profile-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.profile-tab-btn {
+  font-family: inherit;
+  font-size: 0.73rem;
+  font-weight: 600;
+  background: #fff;
+  color: var(--text-secondary);
+  border: 1px solid #d8bfa2;
+  border-radius: 6px;
+  padding: 0.28rem 0.55rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  transition: all 0.14s ease;
+}
+
+.profile-tab-btn:hover {
+  border-color: #9e3d1a;
+  color: var(--text-main);
+}
+
+.profile-tab-btn.active {
+  background: #83381b;
+  color: #fff;
+  border-color: #83381b;
+}
+
+.profile-tab-btn.compare-all-btn.active {
+  background: var(-- text-main, #231914);
+  border-color: #231914;
+}
+
+.best-crown {
+  font-size: 0.65rem;
+  background: #fff3cd;
+  color: #8a5a00;
+  border: 1px solid #eed279;
+  padding: 0.04rem 0.32rem;
+  border-radius: 4px;
+  font-weight: 700;
+}
+
+.profile-tab-btn.active .best-crown {
+  background: #ffd166;
+  color: #231914;
+  border-color: #ffd166;
+}
+
+/* Comparison Tables (Inspector & Full Map View) */
+.profile-compare-wrap {
+  margin-bottom: 0.85rem;
+  background: #faf5ed;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.65rem;
+}
+
+.all-profiles-table-card {
+  margin-top: 0.2rem;
+}
+
+.all-profiles-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.65rem;
+}
+
+.all-profiles-sub {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  margin-top: 0.15rem;
+}
+
+.comparison-table-scroll {
+  overflow-x: auto;
+}
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+  text-align: left;
+}
+
+.comparison-table th {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-weight: 700;
+  padding: 0.42rem 0.55rem;
+  border-bottom: 1.5px solid var(--border-strong);
+  white-space: nowrap;
+}
+
+.comparison-table td {
+  padding: 0.42rem 0.55rem;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-main);
+  white-space: nowrap;
+}
+
+.comparison-table tbody tr {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.comparison-table tbody tr:hover {
+  background: #f5ebe0;
+}
+
+.comparison-table tbody tr.active-row {
+  background: #f2e2ce;
+  font-weight: 600;
+}
+
+.comparison-table-compact th,
+.comparison-table-compact td {
+  padding: 0.3rem 0.4rem;
+  font-size: 0.71rem;
+}
+
+.num-cell {
+  font-family: 'JetBrains Mono', monospace;
+  text-align: center;
+}
+
 /* Modal Home-Roast Accordion */
 .home-roast-accordion {
   border: 1px solid #dfc8ad;

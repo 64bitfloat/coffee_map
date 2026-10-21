@@ -6,8 +6,8 @@
   <title>Coffee Flavor Atlas | 珈琲味覚マッピング＆記録帳</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;600;700&family=Shippori+Mincho:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=3" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;600;700&family=Shippori+Mincho:wght@600;700;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=4" />
 </head>
 <body>
   <!-- Header -->
@@ -152,10 +152,10 @@
               <input type="checkbox" id="showSweetSpotToggle" checked />
               <span>好みゾーン表示</span>
             </label>
-            <!-- 自家焙煎バッチ比較がある時だけ表示 -->
-            <label class="toggle-chip toggle-roast-only" id="batchTrajectoryToggleWrap" title="同じ生豆を異なるプロファイルで焼いたバッチ間の味の変化を矢印で結びます" hidden>
-              <input type="checkbox" id="showBatchLinksToggle" checked />
-              <span>🔥 同一生豆のバッチ軌跡</span>
+            <!-- 自家焙煎データがある時だけ表示される全プロファイル展開トグル（初期はOFF＝最高評価プロファイルのみ表示） -->
+            <label class="toggle-chip toggle-roast-only" id="batchTrajectoryToggleWrap" title="ONにすると、同じ豆の別焙煎プロファイルをすべてマップ上に展開し、下部に全プロファイル比較表を表示します" hidden>
+              <input type="checkbox" id="showBatchLinksToggle" />
+              <span>🔥 全プロファイル展開＆比較表</span>
             </label>
           </div>
         </div>
@@ -194,7 +194,41 @@
         <!-- Floating Tooltip on Hover -->
         <div id="mapTooltip" class="map-tooltip" hidden></div>
         <div class="map-footer-hint">
-          <span>💡 丸いプロットは<strong>複数回記録の平均位置</strong>、うっすら見える点と楕円は<strong>日ごとの評価のブレ範囲</strong>です。クリックで詳細・再記録へ。</span>
+          <span>💡 基本は<strong>各銘柄の最高評価プロファイル（平均位置）</strong>を表示。複数プロファイルがある銘柄は詳細画面で切り替えや全比較表が見られます。</span>
+        </div>
+      </div>
+
+      <!-- 全プロファイル表示モードONの時だけ表示される「プロファイル違い＆豆の違い一覧表」 -->
+      <div id="allProfilesTableCard" class="card all-profiles-table-card" hidden>
+        <div class="all-profiles-header">
+          <div>
+            <h3 class="catalog-title">📊 全銘柄・焙煎プロファイル＆味覚スコア比較一覧表</h3>
+            <p class="all-profiles-sub">各銘柄の焙煎プロファイル（温度・DTR・減少率）の違いと、6軸味覚スコア（平均値）の対照表です。行をクリックすると該当プロファイルを選択します。</p>
+          </div>
+        </div>
+        <div class="comparison-table-scroll">
+          <table class="comparison-table" id="allProfilesComparisonTable">
+            <thead>
+              <tr>
+                <th>銘柄名</th>
+                <th>産地</th>
+                <th>プロファイル / バッチ</th>
+                <th>焙煎度</th>
+                <th>排出温度</th>
+                <th>DTR</th>
+                <th>減少率</th>
+                <th>記録数</th>
+                <th>★評価</th>
+                <th>酸味</th>
+                <th>苦味</th>
+                <th>甘み</th>
+                <th>コク</th>
+                <th>香り</th>
+                <th>余韻</th>
+              </tr>
+            </thead>
+            <tbody id="allProfilesTableBody"></tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -214,6 +248,40 @@
             <div class="inspector-badges" id="inspectorBadges"></div>
             <h2 class="inspector-title" id="inspectorBeanName">—</h2>
             <div class="inspector-meta" id="inspectorMeta">—</div>
+          </div>
+
+          <!-- 🔥 同じ豆に複数の焙煎プロファイルがある時だけ表示されるプロファイル切替バー -->
+          <div id="inspectorProfileSwitcher" class="profile-switcher-box" hidden>
+            <div class="profile-switcher-header">
+              <span>🔥 焙煎プロファイル切替（初期表示：最高評価）</span>
+            </div>
+            <div id="inspectorProfileTabs" class="profile-tabs"></div>
+          </div>
+
+          <!-- 📊 「全プロファイル比較」タブを選択した時だけ出る銘柄内プロファイル対照表 -->
+          <div id="inspectorProfileCompareWrap" class="profile-compare-wrap" hidden>
+            <div class="section-subtitle-row">
+              <span class="section-subtitle">📊 この銘柄のプロファイル別・味覚＆焙煎比較表</span>
+            </div>
+            <div class="comparison-table-scroll">
+              <table class="comparison-table comparison-table-compact">
+                <thead>
+                  <tr>
+                    <th>プロファイル</th>
+                    <th>焙煎度</th>
+                    <th>排出 / DTR</th>
+                    <th>★評価</th>
+                    <th>酸</th>
+                    <th>苦</th>
+                    <th>甘</th>
+                    <th>コク</th>
+                    <th>香</th>
+                    <th>余韻</th>
+                  </tr>
+                </thead>
+                <tbody id="inspectorProfileCompareBody"></tbody>
+              </table>
+            </div>
           </div>
 
           <div class="inspector-actions">
@@ -384,22 +452,20 @@
               </div>
             </div>
 
-            <!-- 同一生豆のバッチ比較用＆主要焙煎数値 -->
+            <!-- 同一銘柄内のプロファイル識別ラベル -->
             <div class="form-grid-2" style="margin-top:0.65rem;">
               <div class="form-field">
-                <label for="baseGreenBeanInput">比較用の生豆グループ名（同じ生豆の別バッチ比較用）</label>
-                <input
-                  type="text"
-                  id="baseGreenBeanInput"
-                  placeholder="例：エチオピア イルガチェフェ コンガ G1"
-                />
+                <label for="existingProfileSelect">既存プロファイルから選ぶ（同じバッチの2杯目以降）</label>
+                <select id="existingProfileSelect" class="select-input">
+                  <option value="">＋ 新しい焙煎プロファイル（別バッチ）として記録</option>
+                </select>
               </div>
               <div class="form-field">
-                <label for="batchLabelInput">バッチ識別ラベル（任意）</label>
+                <label for="batchLabelInput">焙煎プロファイル名 / バッチ名 <span class="req">*</span></label>
                 <input
                   type="text"
                   id="batchLabelInput"
-                  placeholder="例：Batch #1 中浅煎り (204℃排出)"
+                  placeholder="例：Batch #1 中浅煎り (204.5℃)"
                 />
               </div>
             </div>
@@ -569,6 +635,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

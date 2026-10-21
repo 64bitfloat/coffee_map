@@ -1,8 +1,9 @@
 /**
  * Coffee Flavor Atlas - 珈琲味覚マッピング＆記録帳
- * 毎日同じ淹れ方で淹れる珈琲の主観スコアを記録し、
- * 銘柄ごとの複数回平均と「日々の評価ブレ」を多軸四象限マップ＆レーダーで可視化するアプリ。
- * さらに自家焙煎した銘柄のみ Artisan (.alog) / 焙煎プロファイル連携・バッチ比較・焙煎軸マッピングに対応。
+ * ・毎日同じ淹れ方で淹れる珈琲の主観スコアを記録し、回数分の平均と「日々の評価ブレ」を多軸四象限マップ＆レーダーで可視化
+ * ・同じ銘柄で異なる焙煎プロファイル（バッチ）がある場合は1つの銘柄にまとめ、基本は「最高評価（★ベスト）プロファイル」を表示
+ * ・銘柄詳細画面内でプロファイル切替や重ね合わせ比較が可能
+ * ・「全プロファイル展開＆比較表」をONにした時のみ、マップ上で全プロファイルを展開し、全銘柄×全プロファイルの対照表を表示
  */
 
 const STORAGE_KEY = 'coffee_flavor_atlas_logs_v1';
@@ -20,17 +21,15 @@ function buildSyntheticRoastCurve({
   dropSec = 565,
   dropTemp = 207,
 }) {
-  const step = 10; // 10秒刻みで高精細化
+  const step = 10;
   const timex = [];
   const bt = [];
   const et = [];
   const ror = [];
 
-  // TP以降の温度上昇を滑らかな2次/べき乗曲線で補間し、fcsSecでfcsTemp、dropSecでdropTempを通るように設計
   const totalRiseTime = Math.max(60, dropSec - tpTimeSec);
   const totalRiseTemp = Math.max(40, dropTemp - tpTemp);
 
-  // fcs時点での進行率から曲率指数 gamma を逆算して滑らかな単一曲線にする
   const tRatioFcs = Math.max(0.1, Math.min(0.95, (fcsSec - tpTimeSec) / totalRiseTime));
   const tempRatioFcs = Math.max(0.1, Math.min(0.98, (fcsTemp - tpTemp) / totalRiseTemp));
   const gamma = Math.max(0.55, Math.min(0.92, Math.log(tempRatioFcs) / Math.log(tRatioFcs)));
@@ -39,11 +38,9 @@ function buildSyntheticRoastCurve({
     timex.push(t);
     let curBt;
     if (t <= tpTimeSec) {
-      // Charge -> TP: 滑らかな放物線で底（TP）へ
       const u = t / Math.max(1, tpTimeSec);
       curBt = tpTemp + (chargeTemp - tpTemp) * Math.pow(1 - u, 2.1);
     } else {
-      // TP -> Drop: 単一の滑らかな減衰上昇曲線
       const u = (t - tpTimeSec) / totalRiseTime;
       curBt = tpTemp + totalRiseTemp * Math.pow(u, gamma);
     }
@@ -52,7 +49,6 @@ function buildSyntheticRoastCurve({
     et.push(Number(curEt.toFixed(1)));
   }
 
-  // RoR (℃/min): TP直後の立ち上がりから終盤へ滑らかに減衰する曲線
   for (let i = 0; i < timex.length; i++) {
     const t = timex[i];
     if (t < tpTimeSec) {
@@ -60,17 +56,16 @@ function buildSyntheticRoastCurve({
     } else {
       const dtMin = (timex[i] - timex[Math.max(0, i - 1)]) / 60;
       const rawRor = dtMin > 0 ? (bt[i] - bt[Math.max(0, i - 1)]) / dtMin : 0;
-      // TP直後35秒間は0からピークへ滑らかに立ち上がるエンベロープをかける
       const ramp = Math.min(1, (t - tpTimeSec) / 38);
       const smoothRor = rawRor * Math.pow(ramp, 0.8);
       ror.push(Number(Math.max(1.5, Math.min(22, smoothRor)).toFixed(2)));
     }
   }
 
-  return { timex, bt, et, ror, smoothV2: true };
+  return { timex, bt, et, ror, smoothV3: true };
 }
 
-// 軸の定義（味覚スコア 1〜10 ＆ 自家焙煎指標）
+// 軸の定義
 const AXES_META = {
   acidity: {
     label: '酸味・フルーティ',
@@ -149,7 +144,6 @@ const AXES_META = {
     isRoastAxis: false,
     getValue: (s) => Math.max(1, Math.min(10, 5.5 + (s.bitterness - s.acidity) * 0.45)),
   },
-  // 🔥 自家焙煎・Artisan指標軸
   roast_dropTemp: {
     label: '🔥 排出温度 Drop Temp (℃)',
     short: '排出温度',
@@ -196,7 +190,6 @@ const AXES_META = {
   },
 };
 
-// 四象限のコーナーラベル辞書
 const QUADRANT_TITLES = {
   'acidity__bitterness': {
     tr: { title: '芳醇・複雑 (Fruity & Bitter)', sub: 'オランジェット・赤ワイン・ダークベリー系' },
@@ -245,17 +238,18 @@ const ORIGIN_PALETTE = [
   '#7b4b94', '#8f4e27', '#2b7a78', '#a63a50',
 ];
 
+const PROFILE_COMPARE_COLORS = ['#ff8c42', '#38b6ff', '#d9534f', '#9b5de5'];
+
 const DEFAULT_ORIGINS = [
   'エチオピア', 'ケニア', 'コロンビア', 'ブラジル',
   'グアテマラ', 'コスタリカ', 'インドネシア', 'パナマ',
   'ルワンダ', 'エルサルバドル', 'ペルー', 'タンザニア',
 ];
 
-// サンプル用の自家焙煎プロファイル（同一生豆のバッチ#1・バッチ#2比較デモ付き）
+// サンプル用の自家焙煎プロファイル（同じ「エチオピア イルガチェフェ コンガ G1」内の2つのプロファイル）
 const SAMPLE_ROAST_BATCH_1 = {
   isHomeRoasted: true,
-  baseGreenBean: 'エチオピア イルガチェフェ コンガ G1',
-  batchLabel: 'Batch #1 中浅煎り (204.5℃ / DTR 15.8%)',
+  batchLabel: 'Batch #1 中浅煎り (204.5℃)',
   roastDate: '2026-10-07',
   chargeTemp: 194,
   tpTimeSec: 78,
@@ -284,8 +278,7 @@ const SAMPLE_ROAST_BATCH_1 = {
 
 const SAMPLE_ROAST_BATCH_2 = {
   isHomeRoasted: true,
-  baseGreenBean: 'エチオピア イルガチェフェ コンガ G1',
-  batchLabel: 'Batch #2 中深煎り (213.0℃ / DTR 20.6%)',
+  batchLabel: 'Batch #2 中深煎り (213.0℃)',
   roastDate: '2026-10-14',
   chargeTemp: 198,
   tpTimeSec: 82,
@@ -312,14 +305,13 @@ const SAMPLE_ROAST_BATCH_2 = {
   }),
 };
 
-// 初期サンプルデータ
-// 通常の購入豆（roastProfileなし）では焙煎UIは一切表示されず、
-// 自家焙煎豆（エチオピア Batch#1 / #2）を選んだときだけArtisanプロファイルが表示されることを確認できます。
+// 初期サンプルデータ：同じ豆「エチオピア イルガチェフェ コンガ G1」の中に
+// Batch #1 (★平均5.0 -> ベストプロファイルとして代表表示) と Batch #2 (★平均4.5) が格納されています
 const INITIAL_SAMPLE_LOGS = [
-  // 1A. エチオピア コンガ (自家焙煎 Batch #1 中浅煎り): 3回記録
+  // 1. エチオピア イルガチェフェ コンガ G1 - Batch #1 中浅煎り (★平均 5.0 = 最高評価プロファイル)
   {
     id: 'samp-101',
-    beanName: 'エチオピア イルガチェフェ コンガ G1 [Batch #1 中浅煎り]',
+    beanName: 'エチオピア イルガチェフェ コンガ G1',
     origin: 'エチオピア',
     roast: '中浅煎り',
     process: 'ナチュラル',
@@ -327,12 +319,12 @@ const INITIAL_SAMPLE_LOGS = [
     scores: { acidity: 9, bitterness: 3, sweetness: 8, body: 5, aroma: 9, aftertaste: 8 },
     rating: 5,
     tempNote: '冷めると甘み・果実味UP',
-    memo: '【自家焙煎Batch#1】ストロベリージャムのような華やかな香りと明るい酸味。',
+    memo: '【Batch#1 中浅煎り】ストロベリージャムのような華やかな香りと明るい酸味。',
     roastProfile: SAMPLE_ROAST_BATCH_1,
   },
   {
     id: 'samp-102',
-    beanName: 'エチオピア イルガチェフェ コンガ G1 [Batch #1 中浅煎り]',
+    beanName: 'エチオピア イルガチェフェ コンガ G1',
     origin: 'エチオピア',
     roast: '中浅煎り',
     process: 'ナチュラル',
@@ -340,12 +332,12 @@ const INITIAL_SAMPLE_LOGS = [
     scores: { acidity: 8, bitterness: 3, sweetness: 9, body: 6, aroma: 10, aftertaste: 8 },
     rating: 5,
     tempNote: '冷めると甘み・果実味UP',
-    memo: '少し落ち着いて桃やベリーの甘みが前に出てきた。',
+    memo: '【Batch#1】少し落ち着いて桃やベリーの甘みが前に出てきた。',
     roastProfile: SAMPLE_ROAST_BATCH_1,
   },
   {
     id: 'samp-103',
-    beanName: 'エチオピア イルガチェフェ コンガ G1 [Batch #1 中浅煎り]',
+    beanName: 'エチオピア イルガチェフェ コンガ G1',
     origin: 'エチオピア',
     roast: '中浅煎り',
     process: 'ナチュラル',
@@ -353,14 +345,14 @@ const INITIAL_SAMPLE_LOGS = [
     scores: { acidity: 9, bitterness: 2, sweetness: 8, body: 5, aroma: 9, aftertaste: 7 },
     rating: 5,
     tempNote: '変化なし・安定',
-    memo: '紅茶のような質感。DTR15.8%で狙い通りのクリーンな果実味。',
+    memo: '【Batch#1】紅茶のような質感。DTR15.8%で狙い通りのクリーンな果実味。',
     roastProfile: SAMPLE_ROAST_BATCH_1,
   },
 
-  // 1B. 同じエチオピア生豆の別バッチ (自家焙煎 Batch #2 中深煎り): 2回記録 -> バッチ間の味移動を可視化！
+  // 1-B. 同じ「エチオピア イルガチェフェ コンガ G1」の別焙煎プロファイル - Batch #2 中深煎り (★平均 4.5)
   {
     id: 'samp-105',
-    beanName: 'エチオピア イルガチェフェ コンガ G1 [Batch #2 中深煎り]',
+    beanName: 'エチオピア イルガチェフェ コンガ G1',
     origin: 'エチオピア',
     roast: '中深煎り',
     process: 'ナチュラル',
@@ -368,24 +360,24 @@ const INITIAL_SAMPLE_LOGS = [
     scores: { acidity: 6, bitterness: 7, sweetness: 8, body: 8, aroma: 8, aftertaste: 9 },
     rating: 5,
     tempNote: '冷めると甘み・果実味UP',
-    memo: '【自家焙煎Batch#2】213℃・DTR20.6%まで伸ばしたロット。ベリーチョコ感が出て右上象限へ移動！',
+    memo: '【Batch#2 中深煎り】213℃・DTR20.6%まで伸ばしたロット。ベリーチョコ感が出て芳醇！',
     roastProfile: SAMPLE_ROAST_BATCH_2,
   },
   {
     id: 'samp-106',
-    beanName: 'エチオピア イルガチェフェ コンガ G1 [Batch #2 中深煎り]',
+    beanName: 'エチオピア イルガチェフェ コンガ G1',
     origin: 'エチオピア',
     roast: '中深煎り',
     process: 'ナチュラル',
     date: '2026-10-18',
-    scores: { acidity: 7, bitterness: 6, sweetness: 9, body: 7, aroma: 8, aftertaste: 8 },
-    rating: 5,
+    scores: { acidity: 7, bitterness: 6, sweetness: 8, body: 7, aroma: 7, aftertaste: 8 },
+    rating: 4,
     tempNote: '冷めるとまろやかに',
-    memo: '赤ワインとダークチョコの余韻。浅煎りバッチとは別物の芳醇さ。',
+    memo: '【Batch#2】赤ワインとダークチョコの余韻。個人的には浅煎りのBatch#1の方がさらに好み。',
     roastProfile: SAMPLE_ROAST_BATCH_2,
   },
 
-  // 2. ケニア マサイ AA（通常の購入豆・roastProfileなし）: 3回記録
+  // 2. ケニア マサイ AA（通常の購入豆）: 3回記録
   {
     id: 'samp-201',
     beanName: 'ケニア マサイ AA',
@@ -499,7 +491,7 @@ const INITIAL_SAMPLE_LOGS = [
     memo: '奥に黒糖のような甘みとアーシーな余韻が長く残る。',
   },
 
-  // 5. グアテマラ アンティグア アゾテア（通常の購入豆・マップ中央の基準アンカー）: 3回記録
+  // 5. グアテマラ アンティグア アゾテア（通常の購入豆・中央の基準アンカー）: 3回記録
   {
     id: 'samp-501',
     beanName: 'グアテマラ アンティグア アゾテア',
@@ -543,13 +535,14 @@ const state = {
   logs: [],
   isSampleMode: false,
   selectedBeanName: null,
-  hoveredBeanName: null,
+  selectedProfileKey: null, // null = ベストプロファイル, '__ALL__' = 全プロファイル比較, または特定プロファイルkey
+  hoveredMapNodeId: null,
   xAxis: 'acidity',
   yAxis: 'bitterness',
   colorMode: 'roast',
   showVariance: true,
   showSweetSpot: true,
-  showBatchLinks: true,
+  showAllProfiles: false, // false(初期) = 各銘柄の最高評価プロファイルのみ表示 / true = 全プロファイル展開＆比較表
   filters: {
     search: '',
     origin: '',
@@ -558,7 +551,7 @@ const state = {
   },
   sortBy: 'recent',
   renderedBeanPositions: [],
-  currentModalCurve: null, // モーダルで読み込んだ .alog 波形データ一時保持
+  currentModalCurve: null,
   currentModalSourceFile: '',
 };
 
@@ -601,17 +594,25 @@ function cacheElements() {
   els.canvas = document.getElementById('flavorMapCanvas');
   els.mapTooltip = document.getElementById('mapTooltip');
 
+  // 全プロファイル比較一覧表カード
+  els.allProfilesTableCard = document.getElementById('allProfilesTableCard');
+  els.allProfilesTableBody = document.getElementById('allProfilesTableBody');
+
   els.inspectorEmptyState = document.getElementById('inspectorEmptyState');
   els.inspectorContent = document.getElementById('inspectorContent');
   els.inspectorBadges = document.getElementById('inspectorBadges');
   els.inspectorBeanName = document.getElementById('inspectorBeanName');
   els.inspectorMeta = document.getElementById('inspectorMeta');
+  els.inspectorProfileSwitcher = document.getElementById('inspectorProfileSwitcher');
+  els.inspectorProfileTabs = document.getElementById('inspectorProfileTabs');
+  els.inspectorProfileCompareWrap = document.getElementById('inspectorProfileCompareWrap');
+  els.inspectorProfileCompareBody = document.getElementById('inspectorProfileCompareBody');
+
   els.logAgainBtn = document.getElementById('logAgainBtn');
   els.stabilityBadge = document.getElementById('stabilityBadge');
   els.radarCanvas = document.getElementById('radarCanvas');
   els.inspectorScoreGrid = document.getElementById('inspectorScoreGrid');
 
-  // 自家焙煎インスペクター要素（自家焙煎データがある時のみ表示）
   els.inspectorRoastSection = document.getElementById('inspectorRoastSection');
   els.roastBatchBadge = document.getElementById('roastBatchBadge');
   els.roastCurveCanvas = document.getElementById('roastCurveCanvas');
@@ -650,7 +651,7 @@ function cacheElements() {
   els.alogStatusText = document.getElementById('alogStatusText');
   els.alogFileInput = document.getElementById('alogFileInput');
   els.fillDemoAlogBtn = document.getElementById('fillDemoAlogBtn');
-  els.baseGreenBeanInput = document.getElementById('baseGreenBeanInput');
+  els.existingProfileSelect = document.getElementById('existingProfileSelect');
   els.batchLabelInput = document.getElementById('batchLabelInput');
   els.roastChargeTemp = document.getElementById('roastChargeTemp');
   els.roastFcsTime = document.getElementById('roastFcsTime');
@@ -691,11 +692,12 @@ function loadInitialData() {
     try {
       const parsed = JSON.parse(saved);
       const isSampleFlag = isSample === 'true';
-      // もし古いサンプルデータが残っていたら最新サンプル（高精細波形版）に自動更新する
+      // 旧サンプルデータ（[Batch #1]が別銘柄名に分かれていた版など）が残っていたら最新サンプルに自動更新
       const isOldSample =
         isSampleFlag &&
         parsed.some((l) => String(l.id).startsWith('samp-')) &&
-        !parsed.some((l) => l.roastProfile?.curve?.smoothV2);
+        (!parsed.some((l) => l.roastProfile?.curve?.smoothV3) ||
+          parsed.some((l) => l.beanName.includes('[Batch')));
 
       if (isOldSample) {
         state.logs = JSON.parse(JSON.stringify(INITIAL_SAMPLE_LOGS));
@@ -718,6 +720,7 @@ function loadInitialData() {
   const beans = getAggregatedBeans();
   if (beans.length > 0) {
     state.selectedBeanName = beans[0].beanName;
+    state.selectedProfileKey = null; // 初期は最高評価プロファイル
   }
 }
 
@@ -726,80 +729,152 @@ function saveToStorage() {
   localStorage.setItem(SAMPLE_FLAG_KEY, String(state.isSampleMode));
 }
 
-// 銘柄ごとに記録を集約し、平均値・ブレ・自家焙煎プロファイルをまとめる
-function getAggregatedBeans() {
-  const map = new Map();
+// スコア配列群から平均・標準偏差・評価を計算するヘルパー
+function computeProfileStats(logs, profileKey, label) {
+  const scoreKeys = ['acidity', 'bitterness', 'sweetness', 'body', 'aroma', 'aftertaste'];
+  const sortedLogs = [...logs].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const count = sortedLogs.length;
 
-  for (const log of state.logs) {
-    const key = log.beanName.trim();
-    if (!key) continue;
-    if (!map.has(key)) {
-      map.set(key, {
-        beanName: key,
-        origin: log.origin || '不明',
-        roast: log.roast || '中煎り',
-        process: log.process || 'ウォッシュト',
-        roastProfile: null,
-        logs: [],
-      });
-    }
-    const entry = map.get(key);
-    entry.logs.push(log);
-    entry.origin = log.origin || entry.origin;
-    entry.roast = log.roast || entry.roast;
-    entry.process = log.process || entry.process;
-    if (log.roastProfile && log.roastProfile.isHomeRoasted) {
-      entry.roastProfile = log.roastProfile;
-    }
+  const avgScores = {};
+  const sdScores = {};
+  for (const k of scoreKeys) {
+    const vals = sortedLogs.map((l) => Number(l.scores?.[k] ?? 5));
+    const mean = vals.reduce((a, b) => a + b, 0) / count;
+    const variance = vals.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / count;
+    avgScores[k] = Number(mean.toFixed(2));
+    sdScores[k] = Number(Math.sqrt(variance).toFixed(2));
   }
 
-  const scoreKeys = ['acidity', 'bitterness', 'sweetness', 'body', 'aroma', 'aftertaste'];
+  const avgRating =
+    sortedLogs.reduce((acc, l) => acc + Number(l.rating || 4), 0) / count;
+  const meanSd =
+    Object.values(sdScores).reduce((a, b) => a + b, 0) / scoreKeys.length;
+
+  const latest = sortedLogs[0] || {};
+  const roastProfile = sortedLogs.find((l) => l.roastProfile?.isHomeRoasted)?.roastProfile || null;
+
+  return {
+    key: profileKey,
+    label,
+    roast: latest.roast || '中煎り',
+    process: latest.process || 'ウォッシュト',
+    roastProfile,
+    logs: sortedLogs,
+    count,
+    avgScores,
+    sdScores,
+    avgRating: Number(avgRating.toFixed(2)),
+    displayRating: Number(avgRating.toFixed(1)),
+    meanSd: Number(meanSd.toFixed(2)),
+    latestDate: latest.date || '',
+  };
+}
+
+/**
+ * 同じ銘柄名(beanName)を1つの銘柄として集約し、
+ * その内部に焙煎プロファイル単位の配列 (profiles) を持たせる。
+ * 基本の代表値には「最も評価（★お気に入り度）が高いプロファイル (bestProfile)」を採用する。
+ */
+function getAggregatedBeans() {
+  const beanMap = new Map();
+
+  for (const log of state.logs) {
+    const name = log.beanName.trim();
+    if (!name) continue;
+    if (!beanMap.has(name)) {
+      beanMap.set(name, {
+        beanName: name,
+        origin: log.origin || '不明',
+        allLogs: [],
+      });
+    }
+    const entry = beanMap.get(name);
+    entry.allLogs.push(log);
+    if (log.origin) entry.origin = log.origin;
+  }
+
   const result = [];
 
-  for (const bean of map.values()) {
-    bean.logs.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-    const count = bean.logs.length;
-
-    const avgScores = {};
-    const sdScores = {};
-
-    for (const k of scoreKeys) {
-      const vals = bean.logs.map((l) => Number(l.scores?.[k] ?? 5));
-      const mean = vals.reduce((a, b) => a + b, 0) / count;
-      const variance = vals.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / count;
-      avgScores[k] = Number(mean.toFixed(2));
-      sdScores[k] = Number(Math.sqrt(variance).toFixed(2));
+  for (const b of beanMap.values()) {
+    // 銘柄内のログを焙煎プロファイル名ごとにグループ化
+    const profMap = new Map();
+    for (const log of b.allLogs) {
+      const isHome = Boolean(log.roastProfile && log.roastProfile.isHomeRoasted);
+      const pKey = isHome
+        ? (log.roastProfile.batchLabel || `排出${log.roastProfile.dropTemp}℃`).trim()
+        : '__STANDARD__';
+      const pLabel = isHome ? pKey : '通常（購入豆）';
+      if (!profMap.has(pKey)) {
+        profMap.set(pKey, { key: pKey, label: pLabel, logs: [] });
+      }
+      profMap.get(pKey).logs.push(log);
     }
 
-    const avgRating =
-      bean.logs.reduce((acc, l) => acc + Number(l.rating || 4), 0) / count;
-    const meanSd =
-      Object.values(sdScores).reduce((a, b) => a + b, 0) / scoreKeys.length;
+    const profiles = Array.from(profMap.values()).map((pg) =>
+      computeProfileStats(pg.logs, pg.key, pg.label)
+    );
+
+    // 評価（avgRating）が高い順にソート（同率なら記録回数が多い順 -> 日付が新しい順）
+    profiles.sort((p1, p2) => {
+      if (p2.avgRating !== p1.avgRating) return p2.avgRating - p1.avgRating;
+      if (p2.count !== p1.count) return p2.count - p1.count;
+      return (p2.latestDate || '').localeCompare(p1.latestDate || '');
+    });
+
+    const bestProfile = profiles[0];
+    const totalCount = b.allLogs.length;
+    const latestDate = b.allLogs
+      .map((l) => l.date || '')
+      .sort((d1, d2) => d2.localeCompare(d1))[0] || '';
 
     result.push({
-      ...bean,
-      count,
-      avgScores,
-      sdScores,
-      avgRating: Number(avgRating.toFixed(1)),
-      meanSd: Number(meanSd.toFixed(2)),
-      latestDate: bean.logs[0]?.date || '',
+      beanName: b.beanName,
+      origin: b.origin,
+      profiles,
+      bestProfile,
+      hasMultipleProfiles: profiles.length > 1,
+      // 基本表示用（最高評価プロファイルの値を代表として持つ）
+      roast: bestProfile.roast,
+      process: bestProfile.process,
+      roastProfile: bestProfile.roastProfile,
+      logs: bestProfile.logs,
+      allLogs: b.allLogs,
+      count: totalCount,
+      bestProfileCount: bestProfile.count,
+      avgScores: bestProfile.avgScores,
+      sdScores: bestProfile.sdScores,
+      avgRating: bestProfile.displayRating,
+      meanSd: bestProfile.meanSd,
+      latestDate,
     });
   }
 
   return result;
 }
 
+// 現在選択されている銘柄において、表示対象となるプロファイルを取得する
+function getActiveProfileForBean(bean) {
+  if (!bean) return null;
+  if (!state.selectedProfileKey || state.selectedProfileKey === '__ALL__') {
+    return bean.bestProfile;
+  }
+  return bean.profiles.find((p) => p.key === state.selectedProfileKey) || bean.bestProfile;
+}
+
 function getFilteredBeans(beans) {
   return beans.filter((b) => {
     if (state.filters.origin && b.origin !== state.filters.origin) return false;
-    if (state.filters.roast && b.roast !== state.filters.roast) return false;
-    if (state.filters.process && b.process !== state.filters.process) return false;
+    if (state.filters.roast && !b.profiles.some((p) => p.roast === state.filters.roast)) {
+      return false;
+    }
+    if (state.filters.process && !b.profiles.some((p) => p.process === state.filters.process)) {
+      return false;
+    }
     if (state.filters.search) {
       const q = state.filters.search.toLowerCase();
       const matchName = b.beanName.toLowerCase().includes(q);
       const matchOrigin = b.origin.toLowerCase().includes(q);
-      const matchMemo = b.logs.some((l) => (l.memo || '').toLowerCase().includes(q));
+      const matchMemo = b.allLogs.some((l) => (l.memo || '').toLowerCase().includes(q));
       if (!matchName && !matchOrigin && !matchMemo) return false;
     }
     return true;
@@ -807,7 +882,6 @@ function getFilteredBeans(beans) {
 }
 
 function bindEvents() {
-  // 軸プリセット切り替え
   els.axisPresets.addEventListener('click', (e) => {
     const btn = e.target.closest('.preset-pill');
     if (!btn) return;
@@ -857,9 +931,15 @@ function bindEvents() {
     drawFlavorMap();
   });
 
+  // 🔥 全プロファイル展開＆比較表トグル
   els.showBatchLinksToggle.addEventListener('change', () => {
-    state.showBatchLinks = els.showBatchLinksToggle.checked;
-    drawFlavorMap();
+    state.showAllProfiles = els.showBatchLinksToggle.checked;
+    if (state.showAllProfiles) {
+      state.selectedProfileKey = '__ALL__';
+    } else if (state.selectedProfileKey === '__ALL__') {
+      state.selectedProfileKey = null;
+    }
+    refreshAll();
   });
 
   // フィルター
@@ -888,7 +968,7 @@ function bindEvents() {
   // キャンバスマウス操作
   els.canvas.addEventListener('mousemove', handleCanvasMouseMove);
   els.canvas.addEventListener('mouseleave', () => {
-    state.hoveredBeanName = null;
+    state.hoveredMapNodeId = null;
     els.mapTooltip.hidden = true;
     drawFlavorMap();
   });
@@ -896,6 +976,7 @@ function bindEvents() {
 
   window.addEventListener('resize', () => {
     drawFlavorMap();
+    renderInspector();
   });
 
   // サンプル・JSON操作
@@ -904,6 +985,9 @@ function bindEvents() {
       state.logs = [];
       state.isSampleMode = false;
       state.selectedBeanName = null;
+      state.selectedProfileKey = null;
+      state.showAllProfiles = false;
+      els.showBatchLinksToggle.checked = false;
       saveToStorage();
       refreshAll();
       openLogModal();
@@ -918,6 +1002,7 @@ function bindEvents() {
       state.logs = JSON.parse(JSON.stringify(INITIAL_SAMPLE_LOGS));
       state.isSampleMode = true;
       state.selectedBeanName = state.logs[0].beanName;
+      state.selectedProfileKey = null;
       saveToStorage();
       refreshAll();
     }
@@ -930,7 +1015,13 @@ function bindEvents() {
   els.openLogModalBtn.addEventListener('click', () => openLogModal());
   els.logAgainBtn.addEventListener('click', () => {
     if (state.selectedBeanName) {
-      openLogModal({ prefillBeanName: state.selectedBeanName });
+      openLogModal({
+        prefillBeanName: state.selectedBeanName,
+        prefillProfileKey:
+          state.selectedProfileKey && state.selectedProfileKey !== '__ALL__'
+            ? state.selectedProfileKey
+            : null,
+      });
     }
   });
   els.closeModalBtn.addEventListener('click', closeLogModal);
@@ -942,8 +1033,22 @@ function bindEvents() {
   // 自家焙煎チェックボックス開閉
   els.isHomeRoastedCheckbox.addEventListener('change', () => {
     els.homeRoastFormPanel.hidden = !els.isHomeRoastedCheckbox.checked;
-    if (els.isHomeRoastedCheckbox.checked && !els.baseGreenBeanInput.value) {
-      els.baseGreenBeanInput.value = els.beanNameInput.value.replace(/\s*\[.*\]$/, '').trim();
+  });
+
+  // 既存プロファイル選択プルダウン変更時
+  els.existingProfileSelect.addEventListener('change', () => {
+    const pKey = els.existingProfileSelect.value;
+    const bName = els.beanNameInput.value.trim();
+    const beans = getAggregatedBeans();
+    const foundBean = beans.find((b) => b.beanName === bName);
+    if (!foundBean || !pKey) {
+      els.batchLabelInput.value = '';
+      return;
+    }
+    const prof = foundBean.profiles.find((p) => p.key === pKey);
+    if (prof && prof.roastProfile) {
+      els.roastSelect.value = prof.roast;
+      applyRoastProfileToModal(prof.roastProfile);
     }
   });
 
@@ -997,21 +1102,18 @@ function bindEvents() {
     }
   });
 
-  // スライダー値表示の連動
   for (const [key, inputEl] of Object.entries(els.sliders)) {
     inputEl.addEventListener('input', () => {
       els.sliderOutputs[key].textContent = inputEl.value;
     });
   }
 
-  // 星評価ボタン
   els.starRatingGroup.addEventListener('click', (e) => {
     const btn = e.target.closest('.star-btn');
     if (!btn) return;
     setStarRating(Number(btn.dataset.rating));
   });
 
-  // フォーム送信
   els.tastingLogForm.addEventListener('submit', handleFormSubmit);
 }
 
@@ -1034,12 +1136,10 @@ function handleAlogFile(file) {
 }
 
 function parseArtisanAlogContent(rawText, fileName) {
-  // Artisanの .alog は Python dict 形式 (True, False, None, 単一引用符) または JSON
   let data = null;
   try {
     data = JSON.parse(rawText);
   } catch (_) {
-    // PythonリテラルをJSON互換へ変換してパース、または正規表現で主要配列を抽出
     try {
       const jsonLike = rawText
         .replace(/\bTrue\b/g, 'true')
@@ -1059,7 +1159,6 @@ function parseArtisanAlogContent(rawText, fileName) {
   const timex = data.timex.map(Number);
   const etArr = (data.temp1 || []).map(Number);
   const btArr = (data.temp2 || data.temp1 || []).map(Number);
-  // timeindex: [CHARGE, DRY, FCs, FCe, SCs, SCe, DROP, COOL]
   const tidx = Array.isArray(data.timeindex) ? data.timeindex : [-1, 0, 0, 0, 0, 0, 0, 0];
 
   const chargeIdx = tidx[0] >= 0 ? tidx[0] : 0;
@@ -1076,7 +1175,6 @@ function parseArtisanAlogContent(rawText, fileName) {
   const dropSec = Math.max(1, Math.round((timex[dropIdx] || 560) - tCharge));
   const dropTemp = Number((btArr[dropIdx] || 206).toFixed(1));
 
-  // TP (Charge〜DryEndの最小BT)
   let tpIdx = chargeIdx;
   for (let i = chargeIdx; i <= Math.min(dryIdx, btArr.length - 1); i++) {
     if (btArr[i] > 0 && btArr[i] < btArr[tpIdx]) tpIdx = i;
@@ -1091,9 +1189,8 @@ function parseArtisanAlogContent(rawText, fileName) {
     weightLoss = Number((((data.weight[0] - data.weight[1]) / data.weight[0]) * 100).toFixed(1));
   }
 
-  // Charge〜Drop間を約50点に間引いて軽量化
   const span = Math.max(1, dropIdx - chargeIdx);
-  const step = Math.max(1, Math.floor(span / 50));
+  const step = Math.max(1, Math.floor(span / 55));
   const cTime = [];
   const cBt = [];
   const cEt = [];
@@ -1117,8 +1214,7 @@ function parseArtisanAlogContent(rawText, fileName) {
 
   return {
     isHomeRoasted: true,
-    baseGreenBean: data.beans || data.title || '',
-    batchLabel: data.title ? `${data.title} (${dropTemp}℃ / DTR ${dtr}%)` : `排出 ${dropTemp}℃ / DTR ${dtr}%`,
+    batchLabel: data.title ? `${data.title} (${dropTemp}℃)` : `排出 ${dropTemp}℃ / DTR ${dtr}%`,
     roastDate: data.roastisodate || '',
     chargeTemp,
     tpTimeSec,
@@ -1132,7 +1228,7 @@ function parseArtisanAlogContent(rawText, fileName) {
     dtr,
     weightLoss,
     sourceFile: fileName,
-    curve: { timex: cTime, bt: cBt, et: cEt, ror: cRor },
+    curve: { timex: cTime, bt: cBt, et: cEt, ror: cRor, smoothV3: true },
   };
 }
 
@@ -1162,9 +1258,6 @@ function applyRoastProfileToModal(prof) {
   if (!prof) return;
   els.isHomeRoastedCheckbox.checked = true;
   els.homeRoastFormPanel.hidden = false;
-  if (prof.baseGreenBean && !els.baseGreenBeanInput.value) {
-    els.baseGreenBeanInput.value = prof.baseGreenBean;
-  }
   els.batchLabelInput.value = prof.batchLabel || '';
   els.roastChargeTemp.value = prof.chargeTemp ?? 195;
   els.roastFcsTime.value = formatSecToMmSs(prof.fcsSec ?? 470);
@@ -1185,11 +1278,11 @@ function syncPresetActiveState() {
   });
 }
 
-// 自家焙煎データが存在するかどうかを判定し、UIの表示・非表示を自動で切り替える
 function syncHomeRoastVisibility(beans) {
-  const hasAnyHomeRoasted = beans.some((b) => b.roastProfile && b.roastProfile.isHomeRoasted);
+  const hasAnyHomeRoasted = beans.some((b) =>
+    b.profiles.some((p) => p.roastProfile && p.roastProfile.isHomeRoasted)
+  );
 
-  // マップ上の焙煎系プリセット・軸セレクト・バッチ比較トグルを「自家焙煎データがある時のみ」表示
   els.axisPresets.querySelectorAll('.preset-roast-only').forEach((el) => {
     el.hidden = !hasAnyHomeRoasted;
   });
@@ -1197,8 +1290,9 @@ function syncHomeRoastVisibility(beans) {
   els.yAxisRoastGroup.hidden = !hasAnyHomeRoasted;
   els.batchTrajectoryToggleWrap.hidden = !hasAnyHomeRoasted;
 
-  // もし自家焙煎データが1件もないのに焙煎軸が選ばれていたら味覚軸に戻す
   if (!hasAnyHomeRoasted) {
+    state.showAllProfiles = false;
+    els.showBatchLinksToggle.checked = false;
     if (AXES_META[state.xAxis]?.isRoastAxis) {
       state.xAxis = 'acidity';
       els.xAxisSelect.value = 'acidity';
@@ -1218,6 +1312,7 @@ function refreshAll() {
   updateOriginFilterOptions(allBeans);
   renderLegend();
   drawFlavorMap();
+  renderAllProfilesComparisonTable(allBeans);
   renderBeanCatalog();
   renderInspector();
 }
@@ -1231,9 +1326,10 @@ function updateOriginFilterOptions(beans) {
   els.filterOriginSelect.value = origins.includes(current) ? current : '';
 }
 
-function getBeanColor(bean) {
+function getBeanColor(bean, roastOverride) {
+  const roastVal = roastOverride || bean.roast;
   if (state.colorMode === 'roast') {
-    return ROAST_COLORS[bean.roast] || '#6f4225';
+    return ROAST_COLORS[roastVal] || '#6f4225';
   }
   if (state.colorMode === 'process') {
     return PROCESS_COLORS[bean.process] || '#6e655f';
@@ -1313,6 +1409,8 @@ function getQuadrantDescriptions(xKey, yKey) {
 
 // ============================================================================
 // 2軸4象限マップの描画 (Canvas)
+// 基本は「各銘柄の最高評価プロファイル1点」のみを描画し、
+// 全プロファイル表示モード(showAllProfiles)または全比較タブ選択時のみ別プロファイルを展開する
 // ============================================================================
 function drawFlavorMap() {
   const canvas = els.canvas;
@@ -1337,7 +1435,6 @@ function drawFlavorMap() {
   const xMeta = AXES_META[state.xAxis];
   const yMeta = AXES_META[state.yAxis];
 
-  // 任意の最小〜最大スケールをキャンバス座標へ変換
   const toX = (val) => {
     const clamped = Math.max(xMeta.min, Math.min(xMeta.max, val));
     return pad.left + ((clamped - xMeta.min) / (xMeta.max - xMeta.min)) * plotW;
@@ -1347,7 +1444,6 @@ function drawFlavorMap() {
     return pad.top + plotH - ((clamped - yMeta.min) / (yMeta.max - yMeta.min)) * plotH;
   };
 
-  // 背景
   ctx.fillStyle = '#fdfbf7';
   ctx.fillRect(0, 0, width, height);
 
@@ -1364,7 +1460,7 @@ function drawFlavorMap() {
   ctx.fillStyle = bgGrad;
   ctx.fillRect(pad.left, pad.top, plotW, plotH);
 
-  // グリッド目盛り描画（通常は1〜10の10分割、焙煎軸の場合は9分割ステップ）
+  // グリッド目盛り描画
   ctx.lineWidth = 1;
   for (let i = 0; i <= 9; i++) {
     const xVal = xMeta.min + ((xMeta.max - xMeta.min) * i) / 9;
@@ -1394,7 +1490,6 @@ function drawFlavorMap() {
     ctx.fillText(yLabelStr, pad.left - 8, y + 3);
   }
 
-  // 四象限のコーナーラベル描画
   const quads = getQuadrantDescriptions(state.xAxis, state.yAxis);
   drawQuadrantWatermark(ctx, pad.left + 14, pad.top + 22, quads.tl, 'left');
   drawQuadrantWatermark(ctx, pad.left + plotW - 14, pad.top + 22, quads.tr, 'right');
@@ -1414,12 +1509,11 @@ function drawFlavorMap() {
   ctx.stroke();
   ctx.restore();
 
-  // 外枠
   ctx.strokeStyle = '#c8b499';
   ctx.lineWidth = 1.5;
   ctx.strokeRect(pad.left, pad.top, plotW, plotH);
 
-  // X軸ラベル
+  // X軸・Y軸ラベル
   ctx.font = '700 12px "Noto Sans JP", sans-serif';
   ctx.fillStyle = '#4a372b';
   ctx.textAlign = 'center';
@@ -1432,7 +1526,6 @@ function drawFlavorMap() {
   ctx.textAlign = 'right';
   ctx.fillText(`${xMeta.highPole} ▶`, pad.left + plotW, height - 12);
 
-  // Y軸ラベル
   ctx.textAlign = 'center';
   ctx.font = '700 12px "Noto Sans JP", sans-serif';
   ctx.fillStyle = '#4a372b';
@@ -1442,22 +1535,72 @@ function drawFlavorMap() {
   ctx.fillStyle = '#8a7363';
   ctx.fillText(`▼ ${yMeta.lowPole}`, centerX, 37);
 
-  // フィルター済み銘柄を取得（焙煎軸が選ばれている場合は焙煎データを持つ豆のみプロット）
+  // マップに表示するプロットリストを構築
+  // ・通常時: 各銘柄につき1点（選択中の銘柄で別プロファイルを選んでいる場合はそのプロファイル、それ以外は最高評価の bestProfile）
+  // ・全プロファイル展開時 (state.showAllProfiles または 選択銘柄が '__ALL__'): 該当銘柄の全プロファイルを展開
   const allBeans = getAggregatedBeans();
-  const filtered = getFilteredBeans(allBeans);
-  const beans = filtered.filter((b) => {
-    const xv = xMeta.getValue(b.avgScores, b.roastProfile);
-    const yv = yMeta.getValue(b.avgScores, b.roastProfile);
-    return xv !== null && !Number.isNaN(xv) && yv !== null && !Number.isNaN(yv);
-  });
+  const filteredBeans = getFilteredBeans(allBeans);
 
-  // 1. 「好みゾーン（スイートスポット）」の背景グロー描画
+  const plotNodes = [];
+  const trajectoryGroups = [];
+
+  for (const bean of filteredBeans) {
+    const expandThisBean =
+      state.showAllProfiles ||
+      (bean.beanName === state.selectedBeanName && state.selectedProfileKey === '__ALL__');
+
+    if (expandThisBean && bean.hasMultipleProfiles) {
+      const beanNodes = [];
+      for (const prof of bean.profiles) {
+        const xv = xMeta.getValue(prof.avgScores, prof.roastProfile);
+        const yv = yMeta.getValue(prof.avgScores, prof.roastProfile);
+        if (xv === null || Number.isNaN(xv) || yv === null || Number.isNaN(yv)) continue;
+        const node = {
+          nodeId: `${bean.beanName}__${prof.key}`,
+          beanName: bean.beanName,
+          profileKey: prof.key,
+          bean,
+          prof,
+          isBest: prof.key === bean.bestProfile.key,
+          isExpandedSub: true,
+          rawX: xv,
+          rawY: yv,
+        };
+        plotNodes.push(node);
+        beanNodes.push(node);
+      }
+      if (beanNodes.length >= 2) {
+        trajectoryGroups.push(beanNodes);
+      }
+    } else {
+      const prof =
+        bean.beanName === state.selectedBeanName
+          ? getActiveProfileForBean(bean)
+          : bean.bestProfile;
+      const xv = xMeta.getValue(prof.avgScores, prof.roastProfile);
+      const yv = yMeta.getValue(prof.avgScores, prof.roastProfile);
+      if (xv === null || Number.isNaN(xv) || yv === null || Number.isNaN(yv)) continue;
+      plotNodes.push({
+        nodeId: `${bean.beanName}__${prof.key}`,
+        beanName: bean.beanName,
+        profileKey: prof.key,
+        bean,
+        prof,
+        isBest: prof.key === bean.bestProfile.key,
+        isExpandedSub: false,
+        rawX: xv,
+        rawY: yv,
+      });
+    }
+  }
+
+  // 1. 「好みゾーン（スイートスポット）」描画
   if (state.showSweetSpot) {
-    for (const bean of beans) {
-      if (bean.avgRating >= 4.4) {
-        const bx = toX(xMeta.getValue(bean.avgScores, bean.roastProfile));
-        const by = toY(yMeta.getValue(bean.avgScores, bean.roastProfile));
-        const radius = bean.avgRating >= 4.8 ? 85 : 62;
+    for (const item of plotNodes) {
+      if (item.prof.displayRating >= 4.4) {
+        const bx = toX(item.rawX);
+        const by = toY(item.rawY);
+        const radius = item.prof.displayRating >= 4.8 ? 85 : 62;
         const glow = ctx.createRadialGradient(bx, by, 4, bx, by, radius);
         glow.addColorStop(0, 'rgba(217, 155, 56, 0.22)');
         glow.addColorStop(0.6, 'rgba(217, 155, 56, 0.08)');
@@ -1470,21 +1613,20 @@ function drawFlavorMap() {
     }
   }
 
-  // 2. 「日々の評価ブレ」の透過描画
+  // 2. 「日々の評価ブレ」の透過描画（表示中のプロファイル内の各回記録の散らばり）
   if (state.showVariance) {
-    for (const bean of beans) {
-      if (bean.logs.length < 2) continue;
+    for (const item of plotNodes) {
+      if (item.prof.logs.length < 2) continue;
       const isFocused =
-        bean.beanName === state.selectedBeanName || bean.beanName === state.hoveredBeanName;
-      const baseColor = getBeanColor(bean);
+        item.beanName === state.selectedBeanName || item.nodeId === state.hoveredMapNodeId;
+      const baseColor = getBeanColor(item.bean, item.prof.roast);
 
-      const avgX = toX(xMeta.getValue(bean.avgScores, bean.roastProfile));
-      const avgY = toY(yMeta.getValue(bean.avgScores, bean.roastProfile));
+      const avgX = toX(item.rawX);
+      const avgY = toY(item.rawY);
 
-      const pts = bean.logs.map((l) => ({
-        x: toX(xMeta.getValue(l.scores, l.roastProfile || bean.roastProfile)),
-        y: toY(yMeta.getValue(l.scores, l.roastProfile || bean.roastProfile)),
-        date: l.date,
+      const pts = item.prof.logs.map((l) => ({
+        x: toX(xMeta.getValue(l.scores, l.roastProfile || item.prof.roastProfile)),
+        y: toY(yMeta.getValue(l.scores, l.roastProfile || item.prof.roastProfile)),
       }));
 
       const maxDx = Math.max(12, ...pts.map((p) => Math.abs(p.x - avgX))) + 8;
@@ -1519,56 +1661,49 @@ function drawFlavorMap() {
     }
   }
 
-  // 2.5 🔥 同一生豆の別バッチ比較矢印（仕様案B）
-  if (state.showBatchLinks) {
-    const groups = new Map();
-    for (const bean of beans) {
-      const groupName = bean.roastProfile?.baseGreenBean?.trim();
-      if (!groupName) continue;
-      if (!groups.has(groupName)) groups.set(groupName, []);
-      groups.get(groupName).push(bean);
-    }
-
-    for (const [, batchBeans] of groups.entries()) {
-      if (batchBeans.length < 2) continue;
-      // 排出温度または日付順に並べて矢印で結ぶ
-      batchBeans.sort(
-        (a, b) => (a.roastProfile?.dropTemp || 0) - (b.roastProfile?.dropTemp || 0)
+  // 2.5 全プロファイル展開時の同一銘柄プロファイル間矢印
+  for (const groupNodes of trajectoryGroups) {
+    const sorted = [...groupNodes].sort(
+      (a, b) => (a.prof.roastProfile?.dropTemp || 0) - (b.prof.roastProfile?.dropTemp || 0)
+    );
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const n1 = sorted[i];
+      const n2 = sorted[i + 1];
+      drawBatchTrajectoryArrow(
+        ctx,
+        toX(n1.rawX),
+        toY(n1.rawY),
+        toX(n2.rawX),
+        toY(n2.rawY),
+        n1.prof,
+        n2.prof
       );
-      for (let i = 0; i < batchBeans.length - 1; i++) {
-        const b1 = batchBeans[i];
-        const b2 = batchBeans[i + 1];
-        const x1 = toX(xMeta.getValue(b1.avgScores, b1.roastProfile));
-        const y1 = toY(yMeta.getValue(b1.avgScores, b1.roastProfile));
-        const x2 = toX(xMeta.getValue(b2.avgScores, b2.roastProfile));
-        const y2 = toY(yMeta.getValue(b2.avgScores, b2.roastProfile));
-
-        drawBatchTrajectoryArrow(ctx, x1, y1, x2, y2, b1, b2);
-      }
     }
   }
 
-  // 3. 各銘柄のメインプロット描画
+  // 3. メインプロット描画
   state.renderedBeanPositions = [];
 
-  for (const bean of beans) {
-    const rawX = xMeta.getValue(bean.avgScores, bean.roastProfile);
-    const rawY = yMeta.getValue(bean.avgScores, bean.roastProfile);
-    const cx = toX(rawX);
-    const cy = toY(rawY);
-    const color = getBeanColor(bean);
-    const isSelected = bean.beanName === state.selectedBeanName;
-    const isHovered = bean.beanName === state.hoveredBeanName;
-    const isHomeRoasted = Boolean(bean.roastProfile?.isHomeRoasted);
-    const radius = 9 + Math.min(5, bean.count * 1.1);
+  for (const item of plotNodes) {
+    const cx = toX(item.rawX);
+    const cy = toY(item.rawY);
+    const color = getBeanColor(item.bean, item.prof.roast);
+    const isSelected = item.beanName === state.selectedBeanName;
+    const isHovered = item.nodeId === state.hoveredMapNodeId;
+    const isHomeRoasted = Boolean(item.prof.roastProfile?.isHomeRoasted);
+    const radius = 9 + Math.min(5, item.prof.count * 1.1);
 
     state.renderedBeanPositions.push({
-      beanName: bean.beanName,
-      bean,
+      nodeId: item.nodeId,
+      beanName: item.beanName,
+      profileKey: item.profileKey,
+      bean: item.bean,
+      prof: item.prof,
+      isExpandedSub: item.isExpandedSub,
       x: cx,
       y: cy,
-      rawX,
-      rawY,
+      rawX: item.rawX,
+      rawY: item.rawY,
       radius: radius + 4,
     });
 
@@ -1584,7 +1719,6 @@ function drawFlavorMap() {
       ctx.restore();
     }
 
-    // 本体ノード
     ctx.save();
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -1598,20 +1732,26 @@ function drawFlavorMap() {
     ctx.stroke();
     ctx.restore();
 
-    // ノード内の記録回数
     ctx.fillStyle = '#ffffff';
     ctx.font = '700 9.5px "JetBrains Mono", monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(`${bean.count}`, cx, cy + 0.5);
+    ctx.fillText(`${item.prof.count}`, cx, cy + 0.5);
 
-    // 銘柄名ラベル
+    // ラベル文字列：通常時は銘柄名のみ。展開モード時はプロファイル名を添える
     const prefix = isHomeRoasted ? '🔥 ' : '';
-    const rawLabel = prefix + bean.beanName;
-    const label = rawLabel.length > 18 ? rawLabel.slice(0, 17) + '…' : rawLabel;
+    let baseTitle = item.bean.beanName;
+    if (baseTitle.length > 14) baseTitle = baseTitle.slice(0, 13) + '…';
+    const subTag = item.isExpandedSub
+      ? ` (${item.isBest ? '★' : ''}${item.prof.roast})`
+      : item.bean.hasMultipleProfiles
+      ? ` [★ベスト:${item.prof.roast}]`
+      : '';
+    const label = prefix + baseTitle + subTag;
+
     ctx.font = isSelected
-      ? '700 11.5px "Noto Sans JP", sans-serif'
-      : '600 11px "Noto Sans JP", sans-serif';
+      ? '700 11px "Noto Sans JP", sans-serif'
+      : '600 10.5px "Noto Sans JP", sans-serif';
     const textW = ctx.measureText(label).width;
     const labelY = cy - radius - 10;
 
@@ -1631,7 +1771,7 @@ function drawFlavorMap() {
   ctx.restore();
 }
 
-function drawBatchTrajectoryArrow(ctx, x1, y1, x2, y2, b1, b2) {
+function drawBatchTrajectoryArrow(ctx, x1, y1, x2, y2, p1, p2) {
   const dx = x2 - x1;
   const dy = y2 - y1;
   const dist = Math.hypot(dx, dy);
@@ -1645,19 +1785,18 @@ function drawBatchTrajectoryArrow(ctx, x1, y1, x2, y2, b1, b2) {
   const endY = y2 - uy * 16;
 
   ctx.save();
-  ctx.strokeStyle = 'rgba(158, 61, 26, 0.72)';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(158, 61, 26, 0.78)';
+  ctx.lineWidth = 2.2;
   ctx.setLineDash([5, 3]);
   ctx.beginPath();
   ctx.moveTo(startX, startY);
   ctx.lineTo(endX, endY);
   ctx.stroke();
 
-  // 矢印の先端
   ctx.setLineDash([]);
   const headLen = 8;
   const angle = Math.atan2(dy, dx);
-  ctx.fillStyle = 'rgba(158, 61, 26, 0.88)';
+  ctx.fillStyle = 'rgba(158, 61, 26, 0.9)';
   ctx.beginPath();
   ctx.moveTo(endX, endY);
   ctx.lineTo(
@@ -1671,27 +1810,28 @@ function drawBatchTrajectoryArrow(ctx, x1, y1, x2, y2, b1, b2) {
   ctx.closePath();
   ctx.fill();
 
-  // 中間地点に温度差・DTR差のミニバッジ
-  const midX = (startX + endX) / 2;
-  const midY = (startY + endY) / 2;
-  const dTemp = (b2.roastProfile.dropTemp - b1.roastProfile.dropTemp).toFixed(1);
-  const sign = Number(dTemp) >= 0 ? '+' : '';
-  const tag = `焙煎差 ${sign}${dTemp}℃`;
+  if (p1.roastProfile && p2.roastProfile) {
+    const midX = (startX + endX) / 2;
+    const midY = (startY + endY) / 2;
+    const dTemp = (p2.roastProfile.dropTemp - p1.roastProfile.dropTemp).toFixed(1);
+    const sign = Number(dTemp) >= 0 ? '+' : '';
+    const tag = `焙煎差 ${sign}${dTemp}℃`;
 
-  ctx.font = '600 9.5px "JetBrains Mono", monospace';
-  const tw = ctx.measureText(tag).width;
-  ctx.fillStyle = 'rgba(253, 237, 228, 0.92)';
-  ctx.beginPath();
-  ctx.roundRect(midX - tw / 2 - 5, midY - 8, tw + 10, 16, 4);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(158, 61, 26, 0.5)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
+    ctx.font = '600 9.5px "JetBrains Mono", monospace';
+    const tw = ctx.measureText(tag).width;
+    ctx.fillStyle = 'rgba(253, 237, 228, 0.94)';
+    ctx.beginPath();
+    ctx.roundRect(midX - tw / 2 - 5, midY - 8, tw + 10, 16, 4);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(158, 61, 26, 0.55)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
 
-  ctx.fillStyle = '#9e3d1a';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(tag, midX, midY);
+    ctx.fillStyle = '#9e3d1a';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(tag, midX, midY);
+  }
   ctx.restore();
 }
 
@@ -1725,15 +1865,15 @@ function handleCanvasMouseMove(e) {
 
   if (hit) {
     els.canvas.style.cursor = 'pointer';
-    if (state.hoveredBeanName !== hit.beanName) {
-      state.hoveredBeanName = hit.beanName;
+    if (state.hoveredMapNodeId !== hit.nodeId) {
+      state.hoveredMapNodeId = hit.nodeId;
       drawFlavorMap();
     }
     const xMeta = AXES_META[state.xAxis];
     const yMeta = AXES_META[state.yAxis];
-    const rp = hit.bean.roastProfile;
+    const rp = hit.prof.roastProfile;
     const roastExtra = rp
-      ? `<div style="font-size:0.7rem;color:#f5b895;margin-top:2px;">🔥 排出 ${rp.dropTemp}℃ / DTR ${rp.dtr}%</div>`
+      ? `<div style="font-size:0.7rem;color:#f5b895;margin-top:2px;">🔥 ${escapeHtml(hit.prof.label)}｜排出 ${rp.dropTemp}℃ / DTR ${rp.dtr}%</div>`
       : '';
 
     els.mapTooltip.hidden = false;
@@ -1741,16 +1881,16 @@ function handleCanvasMouseMove(e) {
     els.mapTooltip.style.top = `${hit.y - 10}px`;
     els.mapTooltip.innerHTML = `
       <div class="tooltip-title">${escapeHtml(hit.bean.beanName)}</div>
-      <div class="tooltip-sub">${escapeHtml(hit.bean.origin)} / ${escapeHtml(hit.bean.roast)} / ${escapeHtml(hit.bean.process)} (${hit.bean.count}回平均)</div>
+      <div class="tooltip-sub">${escapeHtml(hit.bean.origin)} / ${escapeHtml(hit.prof.roast)} / ${escapeHtml(hit.prof.process)} (${hit.prof.count}回平均)</div>
       <div class="tooltip-coords">
-        ${escapeHtml(xMeta.short)}: ${hit.rawX.toFixed(1)}${xMeta.unit} ｜ ${escapeHtml(yMeta.short)}: ${hit.rawY.toFixed(1)}${yMeta.unit} ｜ ★${hit.bean.avgRating}
+        ${escapeHtml(xMeta.short)}: ${hit.rawX.toFixed(1)}${xMeta.unit} ｜ ${escapeHtml(yMeta.short)}: ${hit.rawY.toFixed(1)}${yMeta.unit} ｜ ★${hit.prof.displayRating}
       </div>
       ${roastExtra}
     `;
   } else {
     els.canvas.style.cursor = 'grab';
-    if (state.hoveredBeanName !== null) {
-      state.hoveredBeanName = null;
+    if (state.hoveredMapNodeId !== null) {
+      state.hoveredMapNodeId = null;
       drawFlavorMap();
     }
     els.mapTooltip.hidden = true;
@@ -1758,16 +1898,85 @@ function handleCanvasMouseMove(e) {
 }
 
 function handleCanvasClick() {
-  if (state.hoveredBeanName) {
-    state.selectedBeanName = state.hoveredBeanName;
-    drawFlavorMap();
-    renderBeanCatalog();
-    renderInspector();
+  if (!state.hoveredMapNodeId) return;
+  const hit = state.renderedBeanPositions.find((p) => p.nodeId === state.hoveredMapNodeId);
+  if (!hit) return;
+
+  state.selectedBeanName = hit.beanName;
+  if (hit.isExpandedSub) {
+    state.selectedProfileKey = hit.profileKey;
+  } else {
+    state.selectedProfileKey = null; // デフォルト（最高評価プロファイル）
   }
+  drawFlavorMap();
+  renderAllProfilesComparisonTable(getAggregatedBeans());
+  renderBeanCatalog();
+  renderInspector();
 }
 
 // ============================================================================
-// 右サイドバー：選択銘柄インスペクター（自家焙煎した銘柄のみ焙煎カーブ表示）
+// 全プロファイル表示モード時の「全銘柄×全プロファイル比較一覧表」
+// ============================================================================
+function renderAllProfilesComparisonTable(allBeans) {
+  if (!state.showAllProfiles) {
+    els.allProfilesTableCard.hidden = true;
+    return;
+  }
+
+  els.allProfilesTableCard.hidden = false;
+  const beans = getFilteredBeans(allBeans);
+  const rowsHtml = [];
+
+  for (const bean of beans) {
+    bean.profiles.forEach((prof, idx) => {
+      const rp = prof.roastProfile;
+      const isBest = idx === 0 && bean.hasMultipleProfiles;
+      const isSelected =
+        bean.beanName === state.selectedBeanName &&
+        (state.selectedProfileKey === prof.key ||
+          (!state.selectedProfileKey && idx === 0));
+
+      rowsHtml.push(`
+        <tr class="${isSelected ? 'active-row' : ''}" data-bean-name="${escapeHtml(bean.beanName)}" data-prof-key="${escapeHtml(prof.key)}">
+          <td><strong>${escapeHtml(bean.beanName)}</strong></td>
+          <td>${escapeHtml(bean.origin)}</td>
+          <td>
+            ${isBest ? '<span class="best-crown">👑ベスト</span> ' : ''}
+            ${escapeHtml(prof.label)}
+          </td>
+          <td>${escapeHtml(prof.roast)}</td>
+          <td class="num-cell">${rp ? `${rp.dropTemp}℃` : '—'}</td>
+          <td class="num-cell">${rp ? `${rp.dtr}%` : '—'}</td>
+          <td class="num-cell">${rp ? `${rp.weightLoss}%` : '—'}</td>
+          <td class="num-cell">${prof.count}回</td>
+          <td class="num-cell" style="color:#c87d20;font-weight:700;">★${prof.displayRating}</td>
+          <td class="num-cell">${prof.avgScores.acidity.toFixed(1)}</td>
+          <td class="num-cell">${prof.avgScores.bitterness.toFixed(1)}</td>
+          <td class="num-cell">${prof.avgScores.sweetness.toFixed(1)}</td>
+          <td class="num-cell">${prof.avgScores.body.toFixed(1)}</td>
+          <td class="num-cell">${prof.avgScores.aroma.toFixed(1)}</td>
+          <td class="num-cell">${prof.avgScores.aftertaste.toFixed(1)}</td>
+        </tr>
+      `);
+    });
+  }
+
+  els.allProfilesTableBody.innerHTML = rowsHtml.join('');
+
+  els.allProfilesTableBody.querySelectorAll('tr').forEach((tr) => {
+    tr.addEventListener('click', () => {
+      state.selectedBeanName = tr.dataset.beanName;
+      state.selectedProfileKey = tr.dataset.profKey;
+      drawFlavorMap();
+      renderAllProfilesComparisonTable(allBeans);
+      renderBeanCatalog();
+      renderInspector();
+    });
+  });
+}
+
+// ============================================================================
+// 右サイドバー：選択銘柄インスペクター（同一銘柄内のプロファイル切替・比較表）
 // ============================================================================
 function renderInspector() {
   const beans = getAggregatedBeans();
@@ -1782,44 +1991,126 @@ function renderInspector() {
   els.inspectorEmptyState.hidden = true;
   els.inspectorContent.hidden = false;
 
-  const roastColor = ROAST_COLORS[bean.roast] || '#6f4225';
-  const homeRoastBadge = bean.roastProfile?.isHomeRoasted
+  const isCompareAllMode = state.selectedProfileKey === '__ALL__';
+  const activeProf = getActiveProfileForBean(bean);
+
+  const roastColor = ROAST_COLORS[activeProf.roast] || '#6f4225';
+  const homeRoastBadge = activeProf.roastProfile?.isHomeRoasted
     ? `<span class="badge badge-home-roast">🔥 自家焙煎</span>`
     : '';
 
   els.inspectorBadges.innerHTML = `
     <span class="badge badge-origin">🌍 ${escapeHtml(bean.origin)}</span>
-    <span class="badge badge-roast" style="background:${roastColor}">${escapeHtml(bean.roast)}</span>
-    <span class="badge badge-process">${escapeHtml(bean.process)}</span>
+    <span class="badge badge-roast" style="background:${roastColor}">${escapeHtml(activeProf.roast)}</span>
+    <span class="badge badge-process">${escapeHtml(activeProf.process)}</span>
     ${homeRoastBadge}
   `;
 
   els.inspectorBeanName.textContent = bean.beanName;
-  els.inspectorMeta.innerHTML = `
-    <span>☕ 記録 <strong>${bean.count}</strong> 回（平均化済）</span>
-    <span>★ 平均お気に入り <strong>${bean.avgRating}</strong></span>
-  `;
+  els.inspectorMeta.innerHTML = bean.hasMultipleProfiles
+    ? `<span>🔥 <strong>${bean.profiles.length}</strong> 種類の焙煎プロファイル（計${bean.count}回記録）</span><span>★ 最高評価 <strong>${bean.bestProfile.displayRating}</strong></span>`
+    : `<span>☕ 記録 <strong>${activeProf.count}</strong> 回（平均化済）</span><span>★ 平均お気に入り <strong>${activeProf.displayRating}</strong></span>`;
 
-  if (bean.count === 1) {
-    els.stabilityBadge.textContent = '記録1回（2回目以降でブレ表示）';
-  } else if (bean.meanSd <= 0.55) {
-    els.stabilityBadge.textContent = `評価の安定度：高（ブレ ±${bean.meanSd}）`;
-  } else if (bean.meanSd <= 0.95) {
-    els.stabilityBadge.textContent = `評価の安定度：中（ブレ ±${bean.meanSd}）`;
+  // 同一銘柄に複数の焙煎プロファイルがある場合のみプロファイル切替バーを表示
+  if (bean.hasMultipleProfiles) {
+    els.inspectorProfileSwitcher.hidden = false;
+    const currentKey = state.selectedProfileKey || bean.bestProfile.key;
+
+    const tabsHtml = bean.profiles
+      .map((p, idx) => {
+        const isBest = idx === 0;
+        const isActive = currentKey === p.key;
+        return `
+          <button type="button" class="profile-tab-btn ${isActive ? 'active' : ''}" data-prof-key="${escapeHtml(p.key)}">
+            ${isBest ? '<span class="best-crown">👑ベスト</span>' : ''}
+            <span>${escapeHtml(p.label)}</span>
+            <span style="opacity:0.85;">(★${p.displayRating})</span>
+          </button>
+        `;
+      })
+      .join('');
+
+    const compareAllBtnHtml = `
+      <button type="button" class="profile-tab-btn compare-all-btn ${isCompareAllMode ? 'active' : ''}" data-prof-key="__ALL__">
+        📊 全プロファイル比較表
+      </button>
+    `;
+
+    els.inspectorProfileTabs.innerHTML = tabsHtml + compareAllBtnHtml;
+
+    els.inspectorProfileTabs.querySelectorAll('.profile-tab-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.selectedProfileKey = btn.dataset.profKey;
+        drawFlavorMap();
+        renderAllProfilesComparisonTable(beans);
+        renderInspector();
+      });
+    });
   } else {
-    els.stabilityBadge.textContent = `日による変化：大（ブレ ±${bean.meanSd}）`;
+    els.inspectorProfileSwitcher.hidden = true;
   }
 
-  // 6軸レーダーチャート描画
-  drawRadarChart(bean);
+  // 「📊 全プロファイル比較表」が選ばれている時のみ、銘柄内のプロファイル比較表を表示
+  if (bean.hasMultipleProfiles && isCompareAllMode) {
+    els.inspectorProfileCompareWrap.hidden = false;
+    els.inspectorProfileCompareBody.innerHTML = bean.profiles
+      .map((p, idx) => {
+        const rp = p.roastProfile;
+        const colorDot = PROFILE_COMPARE_COLORS[idx % PROFILE_COMPARE_COLORS.length];
+        return `
+          <tr data-prof-key="${escapeHtml(p.key)}">
+            <td>
+              <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${colorDot};margin-right:3px;"></span>
+              ${idx === 0 ? '👑 ' : ''}${escapeHtml(p.label)}
+            </td>
+            <td>${escapeHtml(p.roast)}</td>
+            <td class="num-cell">${rp ? `${rp.dropTemp}℃ / ${rp.dtr}%` : '—'}</td>
+            <td class="num-cell" style="color:#c87d20;font-weight:700;">★${p.displayRating}</td>
+            <td class="num-cell">${p.avgScores.acidity.toFixed(1)}</td>
+            <td class="num-cell">${p.avgScores.bitterness.toFixed(1)}</td>
+            <td class="num-cell">${p.avgScores.sweetness.toFixed(1)}</td>
+            <td class="num-cell">${p.avgScores.body.toFixed(1)}</td>
+            <td class="num-cell">${p.avgScores.aroma.toFixed(1)}</td>
+            <td class="num-cell">${p.avgScores.aftertaste.toFixed(1)}</td>
+          </tr>
+        `;
+      })
+      .join('');
+
+    els.inspectorProfileCompareBody.querySelectorAll('tr').forEach((tr) => {
+      tr.addEventListener('click', () => {
+        state.selectedProfileKey = tr.dataset.profKey;
+        drawFlavorMap();
+        renderInspector();
+      });
+    });
+  } else {
+    els.inspectorProfileCompareWrap.hidden = true;
+  }
+
+  // 安定度バッジ
+  if (isCompareAllMode && bean.hasMultipleProfiles) {
+    els.stabilityBadge.textContent = `${bean.profiles.length}プロファイル重ね合わせ比較中`;
+  } else if (activeProf.count === 1) {
+    els.stabilityBadge.textContent = '記録1回（2回目以降でブレ表示）';
+  } else if (activeProf.meanSd <= 0.55) {
+    els.stabilityBadge.textContent = `評価の安定度：高（ブレ ±${activeProf.meanSd}）`;
+  } else if (activeProf.meanSd <= 0.95) {
+    els.stabilityBadge.textContent = `評価の安定度：中（ブレ ±${activeProf.meanSd}）`;
+  } else {
+    els.stabilityBadge.textContent = `日による変化：大（ブレ ±${activeProf.meanSd}）`;
+  }
+
+  // 6軸レーダーチャート描画（単一プロファイル or 全プロファイル重ね合わせ）
+  drawRadarChart(bean, activeProf, isCompareAllMode);
 
   // スコアグリッド
   const scoreKeys = ['acidity', 'bitterness', 'sweetness', 'body', 'aroma', 'aftertaste'];
   els.inspectorScoreGrid.innerHTML = scoreKeys
     .map((k) => {
       const meta = AXES_META[k];
-      const avg = bean.avgScores[k].toFixed(1);
-      const sd = bean.count > 1 ? `±${bean.sdScores[k].toFixed(1)}` : '—';
+      const avg = activeProf.avgScores[k].toFixed(1);
+      const sd = activeProf.count > 1 ? `±${activeProf.sdScores[k].toFixed(1)}` : '—';
       return `
         <div class="score-stat-box">
           <span class="score-stat-label">${escapeHtml(meta.short)}</span>
@@ -1829,12 +2120,16 @@ function renderInspector() {
     })
     .join('');
 
-  // 🔥 条件分岐：自家焙煎した銘柄の場合のみ、焙煎プロファイル（Artisanカーブ＆スペック）を表示！
-  if (bean.roastProfile && bean.roastProfile.isHomeRoasted) {
+  // 🔥 自家焙煎プロファイルセクション（自家焙煎データがある時のみ表示！）
+  const hasRoast = Boolean(activeProf.roastProfile && activeProf.roastProfile.isHomeRoasted);
+  if (hasRoast) {
     els.inspectorRoastSection.hidden = false;
-    const rp = bean.roastProfile;
-    els.roastBatchBadge.textContent = rp.batchLabel || rp.sourceFile || 'Artisan Profile';
-    drawRoastCurveCanvas(rp);
+    const rp = activeProf.roastProfile;
+    els.roastBatchBadge.textContent = isCompareAllMode
+      ? `全${bean.profiles.length}プロファイル波形比較`
+      : rp.batchLabel || rp.sourceFile || 'Artisan Profile';
+
+    drawRoastCurveCanvas(bean, activeProf, isCompareAllMode);
 
     els.inspectorRoastSpecs.innerHTML = `
       <div class="roast-spec-pill">
@@ -1855,19 +2150,25 @@ function renderInspector() {
       </div>
     `;
   } else {
-    // 通常の購入豆では完全に非表示にして画面をスッキリ保つ
     els.inspectorRoastSection.hidden = true;
   }
 
-  // 履歴リスト
-  els.historyCountTitle.textContent = `過去の記録履歴 (${bean.count}件)`;
-  els.inspectorHistoryList.innerHTML = bean.logs
+  // 履歴リスト（全比較時は全ログ、単一プロファイル時はそのプロファイルのログ）
+  const targetLogs = isCompareAllMode ? bean.allLogs : activeProf.logs;
+  els.historyCountTitle.textContent = isCompareAllMode
+    ? `全プロファイルの記録履歴 (${targetLogs.length}件)`
+    : `このプロファイルの記録履歴 (${targetLogs.length}件)`;
+
+  els.inspectorHistoryList.innerHTML = targetLogs
     .map((log) => {
       const stars = '★'.repeat(log.rating || 4) + '☆'.repeat(5 - (log.rating || 4));
+      const batchTag = log.roastProfile?.batchLabel
+        ? `<span style="font-size:0.68rem;background:#fdede4;color:#9e3d1a;padding:1px 5px;border-radius:4px;">🔥 ${escapeHtml(log.roastProfile.batchLabel)}</span>`
+        : '';
       return `
         <div class="history-item">
           <div class="history-item-top">
-            <span class="history-date">${escapeHtml(log.date)}</span>
+            <span class="history-date">${escapeHtml(log.date)} ${batchTag}</span>
             <span class="history-stars">${stars}</span>
             <div class="history-actions">
               <button class="btn-mini" data-edit-id="${escapeHtml(log.id)}">編集</button>
@@ -1909,14 +2210,14 @@ function renderInspector() {
   });
 }
 
-// Artisan 焙煎曲線キャンバス描画 (高精細スーパーサンプリング描画: BT, ET, RoR, DTR帯)
-function drawRoastCurveCanvas(rp) {
+// Artisan 焙煎曲線キャンバス描画 (単一プロファイル表示 ＆ 全プロファイル重ね合わせ比較対応)
+function drawRoastCurveCanvas(bean, activeProf, isCompareAllMode) {
+  const rp = activeProf.roastProfile;
   const canvas = els.roastCurveCanvas;
   const parentBox = canvas.parentElement;
   const cssW = Math.max(320, (parentBox ? parentBox.clientWidth : 360) - 14);
   const cssH = 230;
 
-  // 標準モニター(dpr=1)でもボヤけないよう、最低2.5倍の内部解像度でスーパーサンプリング描画する
   const scale = Math.max(window.devicePixelRatio || 1, 2.5);
   canvas.width = Math.round(cssW * scale);
   canvas.height = Math.round(cssH * scale);
@@ -1930,15 +2231,14 @@ function drawRoastCurveCanvas(rp) {
   const w = cssW;
   const h = cssH;
 
-  const curve =
-    rp.curve && Array.isArray(rp.curve.timex) && rp.curve.timex.length > 2 && rp.curve.smoothV2
-      ? rp.curve
-      : buildSyntheticRoastCurve(rp);
-
-  // 上部に凡例バー(26px)、左に温度軸(38px)、右にRoR軸(34px)、下に時間軸(24px)を確保
   const pad = { top: 30, right: 34, bottom: 26, left: 40 };
   const pw = w - pad.left - pad.right;
   const ph = h - pad.top - pad.bottom;
+
+  const curve =
+    rp.curve && Array.isArray(rp.curve.timex) && rp.curve.timex.length > 2 && rp.curve.smoothV3
+      ? rp.curve
+      : buildSyntheticRoastCurve(rp);
 
   const maxTime = Math.max(600, ...(curve.timex || [600])) * 1.04;
   const minTemp = 80;
@@ -1949,25 +2249,134 @@ function drawRoastCurveCanvas(rp) {
   const toYTemp = (temp) => pad.top + ph - ((temp - minTemp) / (maxTemp - minTemp)) * ph;
   const toYRor = (rorVal) => pad.top + ph - (Math.max(0, Math.min(maxRor, rorVal)) / maxRor) * ph;
 
-  // 背景
   ctx.fillStyle = '#1e1510';
   ctx.fillRect(0, 0, w, h);
 
-  // 上部ヘッダー凡例（プロット領域の外に配置して文字被りを防ぐ）
+  // 横グリッド線と温度・RoR目盛り
+  for (const temp of [100, 150, 200]) {
+    const y = toYTemp(temp);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.11)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(pad.left + pw, y);
+    ctx.stroke();
+
+    ctx.fillStyle = '#d8c8b8';
+    ctx.font = '600 10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${temp}℃`, pad.left - 6, y);
+  }
+
+  for (const rStep of [5, 10, 15, 20]) {
+    const y = toYRor(rStep);
+    ctx.fillStyle = 'rgba(76, 212, 149, 0.75)';
+    ctx.font = '500 9.5px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${rStep}`, pad.left + pw + 5, y);
+  }
+
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(pad.left, pad.top, pw, ph);
+
+  for (let m = 0; m <= Math.floor(maxTime / 60); m += 2) {
+    const sec = m * 60;
+    const x = toX(sec);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+    ctx.beginPath();
+    ctx.moveTo(x, pad.top);
+    ctx.lineTo(x, pad.top + ph);
+    ctx.stroke();
+
+    ctx.fillStyle = '#d8c8b8';
+    ctx.font = '600 10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${m}:00`, x, h - 11);
+  }
+
+  // 全プロファイル比較モード時は複数プロファイルのBT/RoR曲線を色分けして重ね描き！
+  if (isCompareAllMode && bean.hasMultipleProfiles) {
+    ctx.font = '600 10px "Noto Sans JP", sans-serif';
+    ctx.textAlign = 'left';
+    let lx = pad.left;
+    bean.profiles.forEach((p, idx) => {
+      if (!p.roastProfile) return;
+      const col = PROFILE_COMPARE_COLORS[idx % PROFILE_COMPARE_COLORS.length];
+      ctx.fillStyle = col;
+      const shortLbl = p.label.length > 16 ? p.label.slice(0, 15) + '…' : p.label;
+      ctx.fillText(`● ${shortLbl}`, lx, 14);
+      lx += ctx.measureText(`● ${shortLbl}`).width + 14;
+    });
+
+    bean.profiles.forEach((p, idx) => {
+      const prp = p.roastProfile;
+      if (!prp) return;
+      const pCurve =
+        prp.curve && prp.curve.smoothV3 ? prp.curve : buildSyntheticRoastCurve(prp);
+      const col = PROFILE_COMPARE_COLORS[idx % PROFILE_COMPARE_COLORS.length];
+
+      // RoR (破線)
+      ctx.save();
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = 0.65;
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      let started = false;
+      pCurve.timex.forEach((t, i) => {
+        const rv = pCurve.ror[i];
+        if (rv === null || rv === undefined || rv < 0) return;
+        const x = toX(t);
+        const y = toYRor(rv);
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      ctx.restore();
+
+      // BT (実線)
+      ctx.save();
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      pCurve.timex.forEach((t, i) => {
+        const x = toX(t);
+        const y = toYTemp(pCurve.bt[i]);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // 排出点ドット
+      const dx = toX(prp.dropSec);
+      const dy = toYTemp(prp.dropTemp);
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.arc(dx, dy, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    });
+
+    ctx.restore();
+    return;
+  }
+
+  // 単一プロファイル描画
   ctx.font = '600 10.5px "Noto Sans JP", sans-serif';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
-
   ctx.fillStyle = '#ff8c42';
   ctx.fillText('● BT (豆温度)', pad.left, 14);
-
   ctx.fillStyle = '#4cd495';
   ctx.fillText('● RoR (上昇率 ℃/分)', pad.left + 88, 14);
-
   ctx.fillStyle = '#8ecae6';
   ctx.fillText('┄ ET (排気)', pad.left + 206, 14);
 
-  // 1ハゼ〜排出までの DTR 帯ハイライト
   if (rp.fcsSec && rp.dropSec && rp.dropSec > rp.fcsSec) {
     const xFcs = toX(rp.fcsSec);
     const xDrop = toX(rp.dropSec);
@@ -1986,7 +2395,6 @@ function drawRoastCurveCanvas(rp) {
     ctx.stroke();
     ctx.restore();
 
-    // DTRバッジは帯の下部に配置（上部の排出温度ラベルと絶対に重ならないようにする）
     const dtrCenter = (xFcs + xDrop) / 2;
     const dtrText = `DTR ${rp.dtr}%`;
     ctx.font = '700 10px "JetBrains Mono", monospace';
@@ -2003,57 +2411,10 @@ function drawRoastCurveCanvas(rp) {
     ctx.fillText(dtrText, dtrCenter, pad.top + ph - 12);
   }
 
-  // 横グリッド線と左軸（温度 100, 150, 200℃）＆右軸（RoR 5, 10, 15, 20）
-  for (const temp of [100, 150, 200]) {
-    const y = toYTemp(temp);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.11)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(pad.left + pw, y);
-    ctx.stroke();
-
-    ctx.fillStyle = '#d8c8b8';
-    ctx.font = '600 10px "JetBrains Mono", monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(`${temp}℃`, pad.left - 6, y);
-  }
-
-  for (const rStep of [5, 10, 15, 20]) {
-    const y = toYRor(rStep);
-    ctx.fillStyle = 'rgba(76, 212, 149, 0.75)';
-    ctx.font = '500 9.5px "JetBrains Mono", monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText(`${rStep}`, pad.left + pw + 5, y);
-  }
-
-  // 外枠ベースライン
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(pad.left, pad.top, pw, ph);
-
-  // 時間目盛り (2分ごと)
-  for (let m = 0; m <= Math.floor(maxTime / 60); m += 2) {
-    const sec = m * 60;
-    const x = toX(sec);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
-    ctx.beginPath();
-    ctx.moveTo(x, pad.top);
-    ctx.lineTo(x, pad.top + ph);
-    ctx.stroke();
-
-    ctx.fillStyle = '#d8c8b8';
-    ctx.font = '600 10px "JetBrains Mono", monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(`${m}:00`, x, h - 11);
-  }
-
-  // ET (排気温度) 破線
   if (Array.isArray(curve.et) && curve.et.length === curve.timex.length) {
     ctx.save();
     ctx.strokeStyle = 'rgba(142, 202, 230, 0.65)';
     ctx.lineWidth = 1.6;
-    ctx.lineJoin = 'round';
     ctx.setLineDash([4, 3]);
     ctx.beginPath();
     curve.timex.forEach((t, i) => {
@@ -2066,13 +2427,10 @@ function drawRoastCurveCanvas(rp) {
     ctx.restore();
   }
 
-  // RoR (上昇率 ℃/min) 曲線
   if (Array.isArray(curve.ror)) {
     ctx.save();
     ctx.strokeStyle = '#4cd495';
     ctx.lineWidth = 2.0;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
     ctx.beginPath();
     let started = false;
     curve.timex.forEach((t, i) => {
@@ -2091,12 +2449,9 @@ function drawRoastCurveCanvas(rp) {
     ctx.restore();
   }
 
-  // BT (豆温度) メイン曲線
   ctx.save();
   ctx.strokeStyle = '#ff8c42';
   ctx.lineWidth = 2.6;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
   ctx.beginPath();
   curve.timex.forEach((t, i) => {
     const x = toX(t);
@@ -2107,13 +2462,11 @@ function drawRoastCurveCanvas(rp) {
   ctx.stroke();
   ctx.restore();
 
-  // イベントマーカー（背景ピル付きで視認性を高め、位置が重ならないようオフセット配置）
   const drawCalloutBadge = (sec, temp, label, color, offsetX, offsetY) => {
     if (!sec || !temp) return;
     const x = toX(sec);
     const y = toYTemp(temp);
 
-    // ドット
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(x, y, 4.2, 0, Math.PI * 2);
@@ -2122,7 +2475,6 @@ function drawRoastCurveCanvas(rp) {
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    // ラベルボックス
     ctx.font = '700 10px "Noto Sans JP", sans-serif';
     const tw = ctx.measureText(label).width;
     const bx = Math.max(pad.left + tw / 2 + 4, Math.min(pad.left + pw - tw / 2 - 4, x + offsetX));
@@ -2151,7 +2503,7 @@ function drawRoastCurveCanvas(rp) {
   ctx.restore();
 }
 
-function drawRadarChart(bean) {
+function drawRadarChart(bean, activeProf, isCompareAllMode) {
   const canvas = els.radarCanvas;
   const scale = Math.max(window.devicePixelRatio || 1, 2.5);
   const w = 280;
@@ -2208,8 +2560,30 @@ function drawRadarChart(bean) {
     ctx.fillText(AXES_META[k].short, labelPt.x, labelPt.y);
   });
 
-  if (bean.logs.length > 1) {
-    for (const log of bean.logs) {
+  // 全プロファイル比較モード時は各プロファイルの平均ポリゴンを色分けして重ね描き
+  if (isCompareAllMode && bean.hasMultipleProfiles) {
+    bean.profiles.forEach((prof, idx) => {
+      const col = PROFILE_COMPARE_COLORS[idx % PROFILE_COMPARE_COLORS.length];
+      ctx.beginPath();
+      keys.forEach((k, i) => {
+        const pt = getPt(i, prof.avgScores[k]);
+        if (i === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = hexToRgba(col, 0.15);
+      ctx.fill();
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2.1;
+      ctx.stroke();
+    });
+    ctx.restore();
+    return;
+  }
+
+  // 単一プロファイル表示（各回のブレ＋プロファイル平均）
+  if (activeProf.logs.length > 1) {
+    for (const log of activeProf.logs) {
       ctx.beginPath();
       keys.forEach((k, i) => {
         const pt = getPt(i, log.scores[k] || 5);
@@ -2227,7 +2601,7 @@ function drawRadarChart(bean) {
 
   ctx.beginPath();
   keys.forEach((k, i) => {
-    const pt = getPt(i, bean.avgScores[k]);
+    const pt = getPt(i, activeProf.avgScores[k]);
     if (i === 0) ctx.moveTo(pt.x, pt.y);
     else ctx.lineTo(pt.x, pt.y);
   });
@@ -2239,7 +2613,7 @@ function drawRadarChart(bean) {
   ctx.stroke();
 
   keys.forEach((k, i) => {
-    const pt = getPt(i, bean.avgScores[k]);
+    const pt = getPt(i, activeProf.avgScores[k]);
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, 3.2, 0, Math.PI * 2);
     ctx.fillStyle = '#6f4225';
@@ -2272,18 +2646,21 @@ function renderBeanCatalog() {
       const isSelected = b.beanName === state.selectedBeanName;
       const color = ROAST_COLORS[b.roast] || '#6f4225';
       const fireIcon = b.roastProfile?.isHomeRoasted ? '🔥 ' : '';
+      const profBadge = b.hasMultipleProfiles
+        ? `<span style="font-size:0.66rem;background:#fdede4;color:#9e3d1a;padding:1px 5px;border-radius:4px;font-weight:700;">${b.profiles.length}プロファイル</span>`
+        : '';
       return `
         <div class="bean-row ${isSelected ? 'selected' : ''}" data-bean-name="${escapeHtml(b.beanName)}">
           <div class="bean-row-main">
             <div class="bean-row-title">${fireIcon}${escapeHtml(b.beanName)}</div>
             <div class="bean-row-sub">
               <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color}"></span>
-              <span>${escapeHtml(b.origin)} / ${escapeHtml(b.roast)}</span>
-              <span>★${b.avgRating}</span>
+              <span>${escapeHtml(b.origin)} / ★ベスト:${escapeHtml(b.roast)} (${b.avgRating})</span>
+              ${profBadge}
             </div>
           </div>
           <div class="bean-row-right">
-            <span class="cup-count-tag">${b.count}回</span>
+            <span class="cup-count-tag">計${b.count}回</span>
           </div>
         </div>
       `;
@@ -2293,7 +2670,9 @@ function renderBeanCatalog() {
   els.beanListContainer.querySelectorAll('.bean-row').forEach((row) => {
     row.addEventListener('click', () => {
       state.selectedBeanName = row.dataset.beanName;
+      state.selectedProfileKey = state.showAllProfiles ? '__ALL__' : null;
       drawFlavorMap();
+      renderAllProfilesComparisonTable(allBeans);
       renderBeanCatalog();
       renderInspector();
     });
@@ -2301,10 +2680,10 @@ function renderBeanCatalog() {
 }
 
 // ============================================================================
-// モーダル（記録追加・2回目以降の自動補完・自家焙煎オプション）
+// モーダル（記録追加・2回目以降の自動補完・同一銘柄内プロファイル選択）
 // ============================================================================
 function openLogModal(options = {}) {
-  const { prefillBeanName, editLog } = options;
+  const { prefillBeanName, prefillProfileKey, editLog } = options;
   const beans = getAggregatedBeans();
 
   els.existingBeanSelect.innerHTML =
@@ -2312,7 +2691,7 @@ function openLogModal(options = {}) {
     beans
       .map(
         (b) =>
-          `<option value="${escapeHtml(b.beanName)}">${escapeHtml(b.beanName)} （${escapeHtml(b.origin)}・${escapeHtml(b.roast)} / 過去${b.count}回）</option>`
+          `<option value="${escapeHtml(b.beanName)}">${escapeHtml(b.beanName)} （${escapeHtml(b.origin)} / 過去${b.count}回・${b.profiles.length}プロファイル）</option>`
       )
       .join('');
 
@@ -2356,6 +2735,7 @@ function openLogModal(options = {}) {
     els.memoInput.value = editLog.memo || '';
     els.sliderAutoFillNotice.textContent = '記録内容を編集しています';
 
+    populateExistingProfilesDropdown(editLog.beanName);
     if (editLog.roastProfile && editLog.roastProfile.isHomeRoasted) {
       applyRoastProfileToModal(editLog.roastProfile);
     }
@@ -2370,7 +2750,7 @@ function openLogModal(options = {}) {
 
     if (prefillBeanName) {
       els.existingBeanSelect.value = prefillBeanName;
-      applyBeanAutoFill(prefillBeanName);
+      applyBeanAutoFill(prefillBeanName, prefillProfileKey);
     } else {
       els.existingBeanSelect.value = '';
       els.beanNameInput.value = '';
@@ -2393,10 +2773,28 @@ function openLogModal(options = {}) {
   els.logModalBackdrop.hidden = false;
 }
 
+function populateExistingProfilesDropdown(beanName) {
+  const beans = getAggregatedBeans();
+  const found = beans.find((b) => b.beanName === beanName);
+  const homeProfiles = found
+    ? found.profiles.filter((p) => p.roastProfile && p.roastProfile.isHomeRoasted)
+    : [];
+
+  els.existingProfileSelect.innerHTML =
+    '<option value="">＋ 新しい焙煎プロファイル（別バッチ）として記録</option>' +
+    homeProfiles
+      .map(
+        (p) =>
+          `<option value="${escapeHtml(p.key)}">${escapeHtml(p.label)} (${escapeHtml(p.roast)} / 過去${p.count}回・★${p.displayRating})</option>`
+      )
+      .join('');
+}
+
 function resetHomeRoastModalFields() {
   els.isHomeRoastedCheckbox.checked = false;
   els.homeRoastFormPanel.hidden = true;
-  els.baseGreenBeanInput.value = '';
+  els.existingProfileSelect.innerHTML =
+    '<option value="">＋ 新しい焙煎プロファイル（別バッチ）として記録</option>';
   els.batchLabelInput.value = '';
   els.roastChargeTemp.value = '';
   els.roastFcsTime.value = '';
@@ -2411,26 +2809,32 @@ function resetHomeRoastModalFields() {
     '温度曲線（BT/ET/RoR）・1ハゼ・排出温度・DTR(%)・重量減少率を自動抽出します';
 }
 
-function applyBeanAutoFill(beanName) {
+function applyBeanAutoFill(beanName, preferredProfileKey = null) {
   const beans = getAggregatedBeans();
   const found = beans.find((b) => b.beanName === beanName);
   if (!found) return;
 
+  const targetProf =
+    (preferredProfileKey && found.profiles.find((p) => p.key === preferredProfileKey)) ||
+    found.bestProfile;
+
   els.beanNameInput.value = found.beanName;
   els.originInput.value = found.origin;
-  els.roastSelect.value = found.roast;
-  els.processSelect.value = found.process;
+  els.roastSelect.value = targetProf.roast;
+  els.processSelect.value = targetProf.process;
 
   const rounded = {};
-  for (const [k, v] of Object.entries(found.avgScores)) {
+  for (const [k, v] of Object.entries(targetProf.avgScores)) {
     rounded[k] = Math.round(v);
   }
   setSlidersValues(rounded);
-  setStarRating(Math.round(found.avgRating));
-  els.sliderAutoFillNotice.innerHTML = `<strong style="color:#6f4225">✓ 過去${found.count}回の記録から産地・焙煎度・平均スコアを自動セットしました。</strong> 今日の感覚に合わせて微調整してください。`;
+  setStarRating(Math.round(targetProf.displayRating));
+  els.sliderAutoFillNotice.innerHTML = `<strong style="color:#6f4225">✓ 「${escapeHtml(targetProf.label)}」（過去${targetProf.count}回）から基本情報と平均スコアを自動セットしました。</strong>`;
 
-  if (found.roastProfile && found.roastProfile.isHomeRoasted) {
-    applyRoastProfileToModal(found.roastProfile);
+  populateExistingProfilesDropdown(found.beanName);
+  if (targetProf.roastProfile && targetProf.roastProfile.isHomeRoasted) {
+    els.existingProfileSelect.value = targetProf.key;
+    applyRoastProfileToModal(targetProf.roastProfile);
   } else {
     resetHomeRoastModalFields();
   }
@@ -2474,14 +2878,11 @@ function handleFormSubmit(e) {
         (dropSec > fcsSec ? (((dropSec - fcsSec) / dropSec) * 100).toFixed(1) : 16.0)
     );
     const weightLoss = Number(els.roastWeightLoss.value || 14.5);
-    const baseGreenBean =
-      els.baseGreenBeanInput.value.trim() || beanName.replace(/\s*\[.*\]$/, '').trim();
     const batchLabel =
-      els.batchLabelInput.value.trim() || `排出 ${dropTemp}℃ / DTR ${dtr}%`;
+      els.batchLabelInput.value.trim() || `Batch (${els.roastSelect.value} ${dropTemp}℃)`;
 
     roastProfile = {
       isHomeRoasted: true,
-      baseGreenBean,
       batchLabel,
       roastDate: els.logDateInput.value,
       chargeTemp,
@@ -2537,6 +2938,7 @@ function handleFormSubmit(e) {
   }
 
   state.selectedBeanName = beanName;
+  state.selectedProfileKey = roastProfile ? roastProfile.batchLabel : null;
   saveToStorage();
   closeLogModal();
   refreshAll();
@@ -2568,6 +2970,7 @@ function importJsonData(e) {
       state.logs = parsed;
       state.isSampleMode = false;
       state.selectedBeanName = parsed[0]?.beanName || null;
+      state.selectedProfileKey = null;
       saveToStorage();
       refreshAll();
       alert(`${parsed.length}件の記録データを読み込みました。`);
