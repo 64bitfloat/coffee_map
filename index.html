@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;600;700&family=Shippori+Mincho:wght@600;700;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="styles.css?v=5" />
 </head>
 <body>
   <!-- Header -->
@@ -515,7 +515,10 @@
             <div class="slider-item">
               <div class="slider-top">
                 <label for="scoreAcidity">🍋 酸味・フルーティ</label>
-                <output id="valAcidity" class="score-badge">5</output>
+                <div class="slider-val-group">
+                  <span id="prevAvgAcidity" class="prev-avg-tag" hidden></span>
+                  <output id="valAcidity" class="score-badge">5</output>
+                </div>
               </div>
               <input type="range" id="scoreAcidity" min="1" max="10" step="1" value="5" />
               <div class="slider-poles">
@@ -528,7 +531,10 @@
             <div class="slider-item">
               <div class="slider-top">
                 <label for="scoreBitterness">🍫 苦味・ビター</label>
-                <output id="valBitterness" class="score-badge">5</output>
+                <div class="slider-val-group">
+                  <span id="prevAvgBitterness" class="prev-avg-tag" hidden></span>
+                  <output id="valBitterness" class="score-badge">5</output>
+                </div>
               </div>
               <input type="range" id="scoreBitterness" min="1" max="10" step="1" value="5" />
               <div class="slider-poles">
@@ -541,7 +547,10 @@
             <div class="slider-item">
               <div class="slider-top">
                 <label for="scoreSweetness">🍯 甘み</label>
-                <output id="valSweetness" class="score-badge">5</output>
+                <div class="slider-val-group">
+                  <span id="prevAvgSweetness" class="prev-avg-tag" hidden></span>
+                  <output id="valSweetness" class="score-badge">5</output>
+                </div>
               </div>
               <input type="range" id="scoreSweetness" min="1" max="10" step="1" value="5" />
               <div class="slider-poles">
@@ -554,7 +563,10 @@
             <div class="slider-item">
               <div class="slider-top">
                 <label for="scoreBody">🥃 コク・ボディ（質感）</label>
-                <output id="valBody" class="score-badge">5</output>
+                <div class="slider-val-group">
+                  <span id="prevAvgBody" class="prev-avg-tag" hidden></span>
+                  <output id="valBody" class="score-badge">5</output>
+                </div>
               </div>
               <input type="range" id="scoreBody" min="1" max="10" step="1" value="5" />
               <div class="slider-poles">
@@ -567,7 +579,10 @@
             <div class="slider-item">
               <div class="slider-top">
                 <label for="scoreAroma">🌸 香り・華やかさ</label>
-                <output id="valAroma" class="score-badge">5</output>
+                <div class="slider-val-group">
+                  <span id="prevAvgAroma" class="prev-avg-tag" hidden></span>
+                  <output id="valAroma" class="score-badge">5</output>
+                </div>
               </div>
               <input type="range" id="scoreAroma" min="1" max="10" step="1" value="5" />
               <div class="slider-poles">
@@ -580,7 +595,10 @@
             <div class="slider-item">
               <div class="slider-top">
                 <label for="scoreAftertaste">✨ 余韻・後味の長さ</label>
-                <output id="valAftertaste" class="score-badge">5</output>
+                <div class="slider-val-group">
+                  <span id="prevAvgAftertaste" class="prev-avg-tag" hidden></span>
+                  <output id="valAftertaste" class="score-badge">5</output>
+                </div>
               </div>
               <input type="range" id="scoreAftertaste" min="1" max="10" step="1" value="5" />
               <div class="slider-poles">
@@ -607,14 +625,28 @@
           </div>
 
           <div class="form-field">
-            <label for="tempChangeSelect">🌡️ 冷めてからの味の変化（任意）</label>
-            <select id="tempChangeSelect" class="select-input">
-              <option value="変化なし・安定">変化なし・最後まで安定</option>
-              <option value="冷めると甘み・果実味UP">冷めると甘み・果実味UP ✨</option>
-              <option value="冷めるとまろやかに">冷めると角が取れてまろやかに</option>
-              <option value="冷めると酸味が立つ">冷めると酸味が際立つ</option>
-              <option value="冷めると苦味・渋みが立つ">冷めると苦味・渋みが立つ</option>
-            </select>
+            <label for="tempChangeInput">🌡️ 冷めてからの味の変化（任意・未記入可）</label>
+            <input
+              type="text"
+              id="tempChangeInput"
+              list="tempChangeDatalist"
+              placeholder="未記入でもOK（自由入力、または下のタグをクリック）"
+              autocomplete="off"
+            />
+            <datalist id="tempChangeDatalist">
+              <option value="冷めると甘み・果実味UP ✨"></option>
+              <option value="冷めると角が取れてまろやかに"></option>
+              <option value="冷めると酸味が際立つ"></option>
+              <option value="冷めると苦味・渋みが立つ"></option>
+              <option value="変化なし・最後まで安定"></option>
+            </datalist>
+            <div class="origin-quick-chips" id="tempQuickChips">
+              <button type="button" class="origin-chip" data-temp="">未記入(クリア)</button>
+              <button type="button" class="origin-chip" data-temp="冷めると甘み・果実味UP">甘み・果実味UP</button>
+              <button type="button" class="origin-chip" data-temp="冷めるとまろやかに">まろやかに</button>
+              <button type="button" class="origin-chip" data-temp="冷めると酸味が立つ">酸味が立つ</button>
+              <button type="button" class="origin-chip" data-temp="変化なし・安定">変化なし</button>
+            </div>
           </div>
         </div>
 
@@ -635,6 +667,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>

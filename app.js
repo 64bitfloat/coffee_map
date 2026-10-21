@@ -677,11 +677,20 @@ function cacheElements() {
     aroma: document.getElementById('valAroma'),
     aftertaste: document.getElementById('valAftertaste'),
   };
+  els.prevAvgTags = {
+    acidity: document.getElementById('prevAvgAcidity'),
+    bitterness: document.getElementById('prevAvgBitterness'),
+    sweetness: document.getElementById('prevAvgSweetness'),
+    body: document.getElementById('prevAvgBody'),
+    aroma: document.getElementById('prevAvgAroma'),
+    aftertaste: document.getElementById('prevAvgAftertaste'),
+  };
 
   els.starRatingGroup = document.getElementById('starRatingGroup');
   els.ratingTextLabel = document.getElementById('ratingTextLabel');
   els.ratingInput = document.getElementById('ratingInput');
-  els.tempChangeSelect = document.getElementById('tempChangeSelect');
+  els.tempChangeInput = document.getElementById('tempChangeInput');
+  els.tempQuickChips = document.getElementById('tempQuickChips');
   els.memoInput = document.getElementById('memoInput');
 }
 
@@ -1043,14 +1052,29 @@ function bindEvents() {
     const foundBean = beans.find((b) => b.beanName === bName);
     if (!foundBean || !pKey) {
       els.batchLabelInput.value = '';
+      hidePrevAvgTags();
       return;
     }
     const prof = foundBean.profiles.find((p) => p.key === pKey);
-    if (prof && prof.roastProfile) {
+    if (prof) {
       els.roastSelect.value = prof.roast;
-      applyRoastProfileToModal(prof.roastProfile);
+      showPrevAvgTags(prof.avgScores);
+      const rounded = {};
+      for (const [k, v] of Object.entries(prof.avgScores)) rounded[k] = Math.round(v);
+      setSlidersValues(rounded);
+      els.sliderAutoFillNotice.innerHTML = `<strong style="color:#6f4225">✓ 「${escapeHtml(prof.label)}」の${prof.count + 1}回目の記録として追加します</strong>（過去の記録は上書きされません。下書きとして過去${prof.count}回の平均値をセットしています）`;
+      if (prof.roastProfile) applyRoastProfileToModal(prof.roastProfile);
     }
   });
+
+  // 冷めてからの味の変化クイックチップ
+  if (els.tempQuickChips) {
+    els.tempQuickChips.addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-temp]');
+      if (!chip) return;
+      els.tempChangeInput.value = chip.dataset.temp;
+    });
+  }
 
   // 1ハゼ時間・排出時間からDTR(%)を自動計算
   const recalcDtr = () => {
@@ -2718,6 +2742,7 @@ function openLogModal(options = {}) {
 
   const todayStr = new Date().toLocaleDateString('sv-SE');
   resetHomeRoastModalFields();
+  hidePrevAvgTags();
 
   if (editLog) {
     els.modalEyebrow.textContent = 'EDIT TASTING LOG';
@@ -2731,9 +2756,9 @@ function openLogModal(options = {}) {
     els.processSelect.value = editLog.process || 'ウォッシュト';
     setSlidersValues(editLog.scores);
     setStarRating(editLog.rating || 4);
-    els.tempChangeSelect.value = editLog.tempNote || '変化なし・安定';
+    els.tempChangeInput.value = editLog.tempNote || '';
     els.memoInput.value = editLog.memo || '';
-    els.sliderAutoFillNotice.textContent = '記録内容を編集しています';
+    els.sliderAutoFillNotice.textContent = 'この日の1回分の記録内容を編集しています';
 
     populateExistingProfilesDropdown(editLog.beanName);
     if (editLog.roastProfile && editLog.roastProfile.isHomeRoasted) {
@@ -2745,7 +2770,7 @@ function openLogModal(options = {}) {
     els.editLogId.value = '';
     els.logDateInput.value = todayStr;
     els.memoInput.value = '';
-    els.tempChangeSelect.value = '変化なし・安定';
+    els.tempChangeInput.value = ''; // 初期状態は未記入（空欄）
     setStarRating(4);
 
     if (prefillBeanName) {
@@ -2766,11 +2791,32 @@ function openLogModal(options = {}) {
         aftertaste: 5,
       });
       els.sliderAutoFillNotice.textContent =
-        '直感でスライダーを動かしてください（同じ銘柄は回数分の平均位置にマッピングされます）';
+        '今回の1杯のスコアを直感で入力してください（同じ銘柄は回数分の平均位置にマッピングされます）';
     }
   }
 
   els.logModalBackdrop.hidden = false;
+}
+
+function showPrevAvgTags(avgScores) {
+  if (!els.prevAvgTags) return;
+  for (const [k, el] of Object.entries(els.prevAvgTags)) {
+    if (!el) continue;
+    const val = avgScores?.[k];
+    if (val !== undefined) {
+      el.textContent = `前回平均 ${ Number(val).toFixed(1) }`;
+      el.hidden = false;
+    } else {
+      el.hidden = true;
+    }
+  }
+}
+
+function hidePrevAvgTags() {
+  if (!els.prevAvgTags) return;
+  for (const el of Object.values(els.prevAvgTags)) {
+    if (el) el.hidden = true;
+  }
 }
 
 function populateExistingProfilesDropdown(beanName) {
@@ -2828,8 +2874,9 @@ function applyBeanAutoFill(beanName, preferredProfileKey = null) {
     rounded[k] = Math.round(v);
   }
   setSlidersValues(rounded);
+  showPrevAvgTags(targetProf.avgScores);
   setStarRating(Math.round(targetProf.displayRating));
-  els.sliderAutoFillNotice.innerHTML = `<strong style="color:#6f4225">✓ 「${escapeHtml(targetProf.label)}」（過去${targetProf.count}回）から基本情報と平均スコアを自動セットしました。</strong>`;
+  els.sliderAutoFillNotice.innerHTML = `<strong style="color:#6f4225">✓ 「${escapeHtml(targetProf.label)}」の ${targetProf.count + 1} 回目の記録として追加します</strong>（過去の記録は上書きされません。入力ガイドとして過去${targetProf.count}回の平均値を初期セットしています）`;
 
   populateExistingProfilesDropdown(found.beanName);
   if (targetProf.roastProfile && targetProf.roastProfile.isHomeRoasted) {
@@ -2925,7 +2972,7 @@ function handleFormSubmit(e) {
       aftertaste: Number(els.sliders.aftertaste.value),
     },
     rating: Number(els.ratingInput.value || 4),
-    tempNote: els.tempChangeSelect.value,
+    tempNote: els.tempChangeInput.value.trim(),
     memo: els.memoInput.value.trim(),
     roastProfile,
   };
