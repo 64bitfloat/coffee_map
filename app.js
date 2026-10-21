@@ -8,7 +8,7 @@
 const STORAGE_KEY = 'coffee_flavor_atlas_logs_v1';
 const SAMPLE_FLAG_KEY = 'coffee_flavor_atlas_is_sample_v1';
 
-// 合成焙煎カーブ生成ヘルパー（サンプルデータおよび手入力時のプレビュー波形生成用）
+// 合成焙煎カーブ生成ヘルパー（滑らかなArtisan特有の減衰RoR曲線とBT/ET曲線）
 function buildSyntheticRoastCurve({
   chargeTemp = 195,
   tpTimeSec = 80,
@@ -20,44 +20,54 @@ function buildSyntheticRoastCurve({
   dropSec = 565,
   dropTemp = 207,
 }) {
-  const step = 15; // 15秒刻み
+  const step = 10; // 10秒刻みで高精細化
   const timex = [];
   const bt = [];
   const et = [];
   const ror = [];
 
+  // TP以降の温度上昇を滑らかな2次/べき乗曲線で補間し、fcsSecでfcsTemp、dropSecでdropTempを通るように設計
+  const totalRiseTime = Math.max(60, dropSec - tpTimeSec);
+  const totalRiseTemp = Math.max(40, dropTemp - tpTemp);
+
+  // fcs時点での進行率から曲率指数 gamma を逆算して滑らかな単一曲線にする
+  const tRatioFcs = Math.max(0.1, Math.min(0.95, (fcsSec - tpTimeSec) / totalRiseTime));
+  const tempRatioFcs = Math.max(0.1, Math.min(0.98, (fcsTemp - tpTemp) / totalRiseTemp));
+  const gamma = Math.max(0.55, Math.min(0.92, Math.log(tempRatioFcs) / Math.log(tRatioFcs)));
+
   for (let t = 0; t <= dropSec; t += step) {
     timex.push(t);
     let curBt;
     if (t <= tpTimeSec) {
-      // Charge -> TP (放物線状に低下)
-      const p = t / Math.max(1, tpTimeSec);
-      curBt = chargeTemp - (chargeTemp - tpTemp) * (1 - Math.pow(1 - p, 2));
-    } else if (t <= dryEndSec) {
-      const p = (t - tpTimeSec) / Math.max(1, dryEndSec - tpTimeSec);
-      curBt = tpTemp + (dryEndTemp - tpTemp) * Math.pow(p, 0.92);
-    } else if (t <= fcsSec) {
-      const p = (t - dryEndSec) / Math.max(1, fcsSec - dryEndSec);
-      curBt = dryEndTemp + (fcsTemp - dryEndTemp) * Math.pow(p, 0.85);
+      // Charge -> TP: 滑らかな放物線で底（TP）へ
+      const u = t / Math.max(1, tpTimeSec);
+      curBt = tpTemp + (chargeTemp - tpTemp) * Math.pow(1 - u, 2.1);
     } else {
-      const p = (t - fcsSec) / Math.max(1, dropSec - fcsSec);
-      curBt = fcsTemp + (dropTemp - fcsTemp) * Math.pow(p, 0.78);
+      // TP -> Drop: 単一の滑らかな減衰上昇曲線
+      const u = (t - tpTimeSec) / totalRiseTime;
+      curBt = tpTemp + totalRiseTemp * Math.pow(u, gamma);
     }
-    bt.push(Number(curBt.toFixed(1)));
-    et.push(Number((curBt + 28 - (t / dropSec) * 14).toFixed(1)));
+    bt.push(Number(curBt.toFixed(2)));
+    const curEt = curBt + 34 * Math.exp(-t / (dropSec * 0.85)) + 12;
+    et.push(Number(curEt.toFixed(1)));
   }
 
+  // RoR (℃/min): TP直後の立ち上がりから終盤へ滑らかに減衰する曲線
   for (let i = 0; i < timex.length; i++) {
-    if (i === 0 || timex[i] < tpTimeSec) {
+    const t = timex[i];
+    if (t < tpTimeSec) {
       ror.push(null);
     } else {
-      const dtMin = (timex[i] - timex[i - 1]) / 60;
-      const dBt = bt[i] - bt[i - 1];
-      ror.push(Number((dBt / dtMin).toFixed(1)));
+      const dtMin = (timex[i] - timex[Math.max(0, i - 1)]) / 60;
+      const rawRor = dtMin > 0 ? (bt[i] - bt[Math.max(0, i - 1)]) / dtMin : 0;
+      // TP直後35秒間は0からピークへ滑らかに立ち上がるエンベロープをかける
+      const ramp = Math.min(1, (t - tpTimeSec) / 38);
+      const smoothRor = rawRor * Math.pow(ramp, 0.8);
+      ror.push(Number(Math.max(1.5, Math.min(22, smoothRor)).toFixed(2)));
     }
   }
 
-  return { timex, bt, et, ror };
+  return { timex, bt, et, ror, smoothV2: true };
 }
 
 // 軸の定義（味覚スコア 1〜10 ＆ 自家焙煎指標）
@@ -681,11 +691,11 @@ function loadInitialData() {
     try {
       const parsed = JSON.parse(saved);
       const isSampleFlag = isSample === 'true';
-      // もし古いサンプルデータ（roastProfile未対応版）が残っていたら最新サンプルに自動更新する
+      // もし古いサンプルデータが残っていたら最新サンプル（高精細波形版）に自動更新する
       const isOldSample =
         isSampleFlag &&
         parsed.some((l) => String(l.id).startsWith('samp-')) &&
-        !parsed.some((l) => l.roastProfile && l.roastProfile.isHomeRoasted);
+        !parsed.some((l) => l.roastProfile?.curve?.smoothV2);
 
       if (isOldSample) {
         state.logs = JSON.parse(JSON.stringify(INITIAL_SAMPLE_LOGS));
@@ -1307,7 +1317,7 @@ function getQuadrantDescriptions(xKey, yKey) {
 function drawFlavorMap() {
   const canvas = els.canvas;
   const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = Math.max(window.devicePixelRatio || 1, 2);
   const width = Math.max(320, rect.width);
   const height = Math.max(460, rect.height);
 
@@ -1899,88 +1909,152 @@ function renderInspector() {
   });
 }
 
-// Artisan 焙煎曲線キャンバス描画 (BT, ET, RoR, DTR帯)
+// Artisan 焙煎曲線キャンバス描画 (高精細スーパーサンプリング描画: BT, ET, RoR, DTR帯)
 function drawRoastCurveCanvas(rp) {
   const canvas = els.roastCurveCanvas;
-  const dpr = window.devicePixelRatio || 1;
-  const w = 350;
-  const h = 185;
-  canvas.width = w * dpr;
-  canvas.height = h * dpr;
-  canvas.style.width = '100%';
-  canvas.style.height = 'auto';
+  const parentBox = canvas.parentElement;
+  const cssW = Math.max(320, (parentBox ? parentBox.clientWidth : 360) - 14);
+  const cssH = 230;
+
+  // 標準モニター(dpr=1)でもボヤけないよう、最低2.5倍の内部解像度でスーパーサンプリング描画する
+  const scale = Math.max(window.devicePixelRatio || 1, 2.5);
+  canvas.width = Math.round(cssW * scale);
+  canvas.height = Math.round(cssH * scale);
+  canvas.style.width = `${cssW}px`;
+  canvas.style.height = `${cssH}px`;
 
   const ctx = canvas.getContext('2d');
   ctx.save();
-  ctx.scale(dpr, dpr);
+  ctx.scale(scale, scale);
+
+  const w = cssW;
+  const h = cssH;
 
   const curve =
-    rp.curve && Array.isArray(rp.curve.timex) && rp.curve.timex.length > 2
+    rp.curve && Array.isArray(rp.curve.timex) && rp.curve.timex.length > 2 && rp.curve.smoothV2
       ? rp.curve
       : buildSyntheticRoastCurve(rp);
 
-  const pad = { top: 18, right: 32, bottom: 24, left: 34 };
+  // 上部に凡例バー(26px)、左に温度軸(38px)、右にRoR軸(34px)、下に時間軸(24px)を確保
+  const pad = { top: 30, right: 34, bottom: 26, left: 40 };
   const pw = w - pad.left - pad.right;
   const ph = h - pad.top - pad.bottom;
 
-  const maxTime = Math.max(600, ...(curve.timex || [600]));
+  const maxTime = Math.max(600, ...(curve.timex || [600])) * 1.04;
   const minTemp = 80;
-  const maxTemp = 240;
-  const maxRor = 25;
+  const maxTemp = 235;
+  const maxRor = 24;
 
   const toX = (sec) => pad.left + (sec / maxTime) * pw;
   const toYTemp = (temp) => pad.top + ph - ((temp - minTemp) / (maxTemp - minTemp)) * ph;
   const toYRor = (rorVal) => pad.top + ph - (Math.max(0, Math.min(maxRor, rorVal)) / maxRor) * ph;
 
   // 背景
-  ctx.fillStyle = '#231914';
+  ctx.fillStyle = '#1e1510';
   ctx.fillRect(0, 0, w, h);
+
+  // 上部ヘッダー凡例（プロット領域の外に配置して文字被りを防ぐ）
+  ctx.font = '600 10.5px "Noto Sans JP", sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+
+  ctx.fillStyle = '#ff8c42';
+  ctx.fillText('● BT (豆温度)', pad.left, 14);
+
+  ctx.fillStyle = '#4cd495';
+  ctx.fillText('● RoR (上昇率 ℃/分)', pad.left + 88, 14);
+
+  ctx.fillStyle = '#8ecae6';
+  ctx.fillText('┄ ET (排気)', pad.left + 206, 14);
 
   // 1ハゼ〜排出までの DTR 帯ハイライト
   if (rp.fcsSec && rp.dropSec && rp.dropSec > rp.fcsSec) {
     const xFcs = toX(rp.fcsSec);
     const xDrop = toX(rp.dropSec);
-    ctx.fillStyle = 'rgba(217, 155, 56, 0.16)';
+    ctx.fillStyle = 'rgba(235, 168, 52, 0.16)';
     ctx.fillRect(xFcs, pad.top, xDrop - xFcs, ph);
 
-    ctx.fillStyle = '#f3c68f';
-    ctx.font = '600 9px "JetBrains Mono", monospace';
+    ctx.strokeStyle = 'rgba(235, 168, 52, 0.45)';
+    ctx.lineWidth = 1;
+    ctx.save();
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(xFcs, pad.top);
+    ctx.lineTo(xFcs, pad.top + ph);
+    ctx.moveTo(xDrop, pad.top);
+    ctx.lineTo(xDrop, pad.top + ph);
+    ctx.stroke();
+    ctx.restore();
+
+    // DTRバッジは帯の下部に配置（上部の排出温度ラベルと絶対に重ならないようにする）
+    const dtrCenter = (xFcs + xDrop) / 2;
+    const dtrText = `DTR ${rp.dtr}%`;
+    ctx.font = '700 10px "JetBrains Mono", monospace';
+    const dtw = ctx.measureText(dtrText).width;
+    ctx.fillStyle = 'rgba(30, 21, 16, 0.88)';
+    ctx.beginPath();
+    ctx.roundRect(dtrCenter - dtw / 2 - 5, pad.top + ph - 20, dtw + 10, 16, 4);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(235, 168, 52, 0.6)';
+    ctx.stroke();
+
+    ctx.fillStyle = '#ffd166';
     ctx.textAlign = 'center';
-    ctx.fillText(`DTR ${rp.dtr}%`, (xFcs + xDrop) / 2, pad.top + 11);
+    ctx.fillText(dtrText, dtrCenter, pad.top + ph - 12);
   }
 
-  // 横グリッド線 (100, 150, 200℃)
+  // 横グリッド線と左軸（温度 100, 150, 200℃）＆右軸（RoR 5, 10, 15, 20）
   for (const temp of [100, 150, 200]) {
     const y = toYTemp(temp);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.11)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(pad.left, y);
     ctx.lineTo(pad.left + pw, y);
     ctx.stroke();
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-    ctx.font = '400 9px "JetBrains Mono", monospace';
+    ctx.fillStyle = '#d8c8b8';
+    ctx.font = '600 10px "JetBrains Mono", monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(`${temp}℃`, pad.left - 4, y + 3);
+    ctx.fillText(`${temp}℃`, pad.left - 6, y);
   }
+
+  for (const rStep of [5, 10, 15, 20]) {
+    const y = toYRor(rStep);
+    ctx.fillStyle = 'rgba(76, 212, 149, 0.75)';
+    ctx.font = '500 9.5px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${rStep}`, pad.left + pw + 5, y);
+  }
+
+  // 外枠ベースライン
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(pad.left, pad.top, pw, ph);
 
   // 時間目盛り (2分ごと)
   for (let m = 0; m <= Math.floor(maxTime / 60); m += 2) {
     const sec = m * 60;
     const x = toX(sec);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-    ctx.font = '400 9px "JetBrains Mono", monospace';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+    ctx.beginPath();
+    ctx.moveTo(x, pad.top);
+    ctx.lineTo(x, pad.top + ph);
+    ctx.stroke();
+
+    ctx.fillStyle = '#d8c8b8';
+    ctx.font = '600 10px "JetBrains Mono", monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(`${m}:00`, x, h - 6);
+    ctx.fillText(`${m}:00`, x, h - 11);
   }
 
-  // ET (排気/環境温度) 破線
+  // ET (排気温度) 破線
   if (Array.isArray(curve.et) && curve.et.length === curve.timex.length) {
     ctx.save();
-    ctx.strokeStyle = 'rgba(130, 180, 220, 0.55)';
-    ctx.lineWidth = 1.3;
-    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = 'rgba(142, 202, 230, 0.65)';
+    ctx.lineWidth = 1.6;
+    ctx.lineJoin = 'round';
+    ctx.setLineDash([4, 3]);
     ctx.beginPath();
     curve.timex.forEach((t, i) => {
       const x = toX(t);
@@ -1995,8 +2069,10 @@ function drawRoastCurveCanvas(rp) {
   // RoR (上昇率 ℃/min) 曲線
   if (Array.isArray(curve.ror)) {
     ctx.save();
-    ctx.strokeStyle = '#63c59a';
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#4cd495';
+    ctx.lineWidth = 2.0;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     ctx.beginPath();
     let started = false;
     curve.timex.forEach((t, i) => {
@@ -2017,8 +2093,10 @@ function drawRoastCurveCanvas(rp) {
 
   // BT (豆温度) メイン曲線
   ctx.save();
-  ctx.strokeStyle = '#f28b50';
-  ctx.lineWidth = 2.2;
+  ctx.strokeStyle = '#ff8c42';
+  ctx.lineWidth = 2.6;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
   ctx.beginPath();
   curve.timex.forEach((t, i) => {
     const x = toX(t);
@@ -2029,49 +2107,63 @@ function drawRoastCurveCanvas(rp) {
   ctx.stroke();
   ctx.restore();
 
-  // イベントマーカー (1ハゼ FCs / 排出 Drop)
-  const drawEventPin = (sec, temp, label, color) => {
+  // イベントマーカー（背景ピル付きで視認性を高め、位置が重ならないようオフセット配置）
+  const drawCalloutBadge = (sec, temp, label, color, offsetX, offsetY) => {
     if (!sec || !temp) return;
     const x = toX(sec);
     const y = toYTemp(temp);
+
+    // ドット
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.arc(x, y, 4.2, 0, Math.PI * 2);
     ctx.fill();
-    ctx.font = '600 8.5px "Noto Sans JP", sans-serif';
+    ctx.strokeStyle = '#1e1510';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // ラベルボックス
+    ctx.font = '700 10px "Noto Sans JP", sans-serif';
+    const tw = ctx.measureText(label).width;
+    const bx = Math.max(pad.left + tw / 2 + 4, Math.min(pad.left + pw - tw / 2 - 4, x + offsetX));
+    const by = y + offsetY;
+
+    ctx.fillStyle = 'rgba(30, 21, 16, 0.9)';
+    ctx.beginPath();
+    ctx.roundRect(bx - tw / 2 - 5, by - 8, tw + 10, 16, 4);
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.fillStyle = color;
     ctx.textAlign = 'center';
-    ctx.fillText(label, x, y - 7);
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, bx, by);
   };
 
-  drawEventPin(rp.fcsSec, rp.fcsTemp, `1ハゼ ${rp.fcsTemp}℃`, '#ffd166');
-  drawEventPin(rp.dropSec, rp.dropTemp, `排出 ${rp.dropTemp}℃`, '#ff7b54');
-
-  // 凡例
-  ctx.font = '600 8.5px "JetBrains Mono", monospace';
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#f28b50';
-  ctx.fillText('● BT(豆温度)', pad.left + 4, pad.top + 10);
-  ctx.fillStyle = '#63c59a';
-  ctx.fillText('● RoR(上昇率)', pad.left + 76, pad.top + 10);
-  ctx.fillStyle = 'rgba(130, 180, 220, 0.85)';
-  ctx.fillText('-- ET', pad.left + 154, pad.top + 10);
+  if (rp.tpTimeSec && rp.tpTemp) {
+    drawCalloutBadge(rp.tpTimeSec, rp.tpTemp, `TP ${rp.tpTemp}℃`, '#a8dadc', 12, 14);
+  }
+  drawCalloutBadge(rp.fcsSec, rp.fcsTemp, `1ハゼ ${rp.fcsTemp}℃`, '#ffd166', -22, -15);
+  drawCalloutBadge(rp.dropSec, rp.dropTemp, `排出 ${rp.dropTemp}℃`, '#ff7b54', -18, 16);
 
   ctx.restore();
 }
 
 function drawRadarChart(bean) {
   const canvas = els.radarCanvas;
-  const dpr = window.devicePixelRatio || 1;
+  const scale = Math.max(window.devicePixelRatio || 1, 2.5);
   const w = 280;
   const h = 230;
-  canvas.width = w * dpr;
-  canvas.height = h * dpr;
+  canvas.width = Math.round(w * scale);
+  canvas.height = Math.round(h * scale);
   canvas.style.width = `${w}px`;
   canvas.style.height = `${h}px`;
 
   const ctx = canvas.getContext('2d');
   ctx.save();
-  ctx.scale(dpr, dpr);
+  ctx.scale(scale, scale);
 
   const cx = w / 2;
   const cy = h / 2 + 4;
