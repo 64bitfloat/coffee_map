@@ -1,19 +1,76 @@
 /**
  * Coffee Flavor Atlas - 珈琲味覚マッピング＆記録帳
  * 毎日同じ淹れ方で淹れる珈琲の主観スコアを記録し、
- * 銘柄ごとの複数回平均と「日々の評価ブレ」を多軸四象限マップ＆レーダーで可視化するアプリ
+ * 銘柄ごとの複数回平均と「日々の評価ブレ」を多軸四象限マップ＆レーダーで可視化するアプリ。
+ * さらに自家焙煎した銘柄のみ Artisan (.alog) / 焙煎プロファイル連携・バッチ比較・焙煎軸マッピングに対応。
  */
 
 const STORAGE_KEY = 'coffee_flavor_atlas_logs_v1';
 const SAMPLE_FLAG_KEY = 'coffee_flavor_atlas_is_sample_v1';
 
-// 軸の定義
+// 合成焙煎カーブ生成ヘルパー（サンプルデータおよび手入力時のプレビュー波形生成用）
+function buildSyntheticRoastCurve({
+  chargeTemp = 195,
+  tpTimeSec = 80,
+  tpTemp = 102,
+  dryEndSec = 270,
+  dryEndTemp = 152,
+  fcsSec = 470,
+  fcsTemp = 196,
+  dropSec = 565,
+  dropTemp = 207,
+}) {
+  const step = 15; // 15秒刻み
+  const timex = [];
+  const bt = [];
+  const et = [];
+  const ror = [];
+
+  for (let t = 0; t <= dropSec; t += step) {
+    timex.push(t);
+    let curBt;
+    if (t <= tpTimeSec) {
+      // Charge -> TP (放物線状に低下)
+      const p = t / Math.max(1, tpTimeSec);
+      curBt = chargeTemp - (chargeTemp - tpTemp) * (1 - Math.pow(1 - p, 2));
+    } else if (t <= dryEndSec) {
+      const p = (t - tpTimeSec) / Math.max(1, dryEndSec - tpTimeSec);
+      curBt = tpTemp + (dryEndTemp - tpTemp) * Math.pow(p, 0.92);
+    } else if (t <= fcsSec) {
+      const p = (t - dryEndSec) / Math.max(1, fcsSec - dryEndSec);
+      curBt = dryEndTemp + (fcsTemp - dryEndTemp) * Math.pow(p, 0.85);
+    } else {
+      const p = (t - fcsSec) / Math.max(1, dropSec - fcsSec);
+      curBt = fcsTemp + (dropTemp - fcsTemp) * Math.pow(p, 0.78);
+    }
+    bt.push(Number(curBt.toFixed(1)));
+    et.push(Number((curBt + 28 - (t / dropSec) * 14).toFixed(1)));
+  }
+
+  for (let i = 0; i < timex.length; i++) {
+    if (i === 0 || timex[i] < tpTimeSec) {
+      ror.push(null);
+    } else {
+      const dtMin = (timex[i] - timex[i - 1]) / 60;
+      const dBt = bt[i] - bt[i - 1];
+      ror.push(Number((dBt / dtMin).toFixed(1)));
+    }
+  }
+
+  return { timex, bt, et, ror };
+}
+
+// 軸の定義（味覚スコア 1〜10 ＆ 自家焙煎指標）
 const AXES_META = {
   acidity: {
     label: '酸味・フルーティ',
     short: 'フルーティ',
     lowPole: '穏やか・低酸味',
     highPole: '鮮やか・フルーティ',
+    min: 1,
+    max: 10,
+    unit: '',
+    isRoastAxis: false,
     getValue: (s) => s.acidity,
   },
   bitterness: {
@@ -21,6 +78,10 @@ const AXES_META = {
     short: 'ビター',
     lowPole: '控えめ・マイルド',
     highPole: '力強い・ビター',
+    min: 1,
+    max: 10,
+    unit: '',
+    isRoastAxis: false,
     getValue: (s) => s.bitterness,
   },
   sweetness: {
@@ -28,6 +89,10 @@ const AXES_META = {
     short: '甘み',
     lowPole: 'ドライ・すっきり',
     highPole: 'リッチな甘み',
+    min: 1,
+    max: 10,
+    unit: '',
+    isRoastAxis: false,
     getValue: (s) => s.sweetness,
   },
   body: {
@@ -35,6 +100,10 @@ const AXES_META = {
     short: 'コク',
     lowPole: '軽やか・ティーライク',
     highPole: '重厚・濃厚ボディ',
+    min: 1,
+    max: 10,
+    unit: '',
+    isRoastAxis: false,
     getValue: (s) => s.body,
   },
   aroma: {
@@ -42,6 +111,10 @@ const AXES_META = {
     short: '華やかさ',
     lowPole: '落ち着き・ナッツ感',
     highPole: '華やか・アロマティック',
+    min: 1,
+    max: 10,
+    unit: '',
+    isRoastAxis: false,
     getValue: (s) => s.aroma,
   },
   aftertaste: {
@@ -49,6 +122,10 @@ const AXES_META = {
     short: '余韻',
     lowPole: 'キレが良い・爽快',
     highPole: '長い余韻・持続',
+    min: 1,
+    max: 10,
+    unit: '',
+    isRoastAxis: false,
     getValue: (s) => s.aftertaste,
   },
   balance_ab: {
@@ -56,12 +133,60 @@ const AXES_META = {
     short: '酸⇔苦バランス',
     lowPole: '酸味・果実味寄り',
     highPole: '苦味・ロースト寄り',
-    // 1〜10に正規化: (bitterness - acidity + 10) / 2 -> 0.5〜9.5 を 1〜10へ
+    min: 1,
+    max: 10,
+    unit: '',
+    isRoastAxis: false,
     getValue: (s) => Math.max(1, Math.min(10, 5.5 + (s.bitterness - s.acidity) * 0.45)),
+  },
+  // 🔥 自家焙煎・Artisan指標軸
+  roast_dropTemp: {
+    label: '🔥 排出温度 Drop Temp (℃)',
+    short: '排出温度',
+    lowPole: '低温・浅め (192℃)',
+    highPole: '高温・深め (224℃)',
+    min: 192,
+    max: 224,
+    unit: '℃',
+    isRoastAxis: true,
+    getValue: (_s, roast) => (roast ? Number(roast.dropTemp) : null),
+  },
+  roast_dtr: {
+    label: '🔥 DTR 発達時間比率 (%)',
+    short: 'DTR(%)',
+    lowPole: '短め・クリーン (11%)',
+    highPole: '長め・発達重視 (25%)',
+    min: 11,
+    max: 25,
+    unit: '%',
+    isRoastAxis: true,
+    getValue: (_s, roast) => (roast ? Number(roast.dtr) : null),
+  },
+  roast_time: {
+    label: '🔥 総焙煎時間 (分)',
+    short: '焙煎時間',
+    lowPole: '短時間・ファスト (7分)',
+    highPole: '長時間・スロー (14分)',
+    min: 7,
+    max: 14,
+    unit: '分',
+    isRoastAxis: true,
+    getValue: (_s, roast) => (roast && roast.dropSec ? Number((roast.dropSec / 60).toFixed(2)) : null),
+  },
+  roast_loss: {
+    label: '🔥 重量減少率 (%)',
+    short: '減少率(%)',
+    lowPole: '軽減少 (11%)',
+    highPole: '高減少 (19%)',
+    min: 11,
+    max: 19,
+    unit: '%',
+    isRoastAxis: true,
+    getValue: (_s, roast) => (roast ? Number(roast.weightLoss) : null),
   },
 };
 
-// 四象限のコーナーラベル辞書（特定ペア用の特別名称＋汎用自動生成）
+// 四象限のコーナーラベル辞書
 const QUADRANT_TITLES = {
   'acidity__bitterness': {
     tr: { title: '芳醇・複雑 (Fruity & Bitter)', sub: 'オランジェット・赤ワイン・ダークベリー系' },
@@ -116,12 +241,75 @@ const DEFAULT_ORIGINS = [
   'ルワンダ', 'エルサルバドル', 'ペルー', 'タンザニア',
 ];
 
-// 初期サンプルデータ（複数回記録の平均化・ブレの可視化がすぐ体験できるデータ）
+// サンプル用の自家焙煎プロファイル（同一生豆のバッチ#1・バッチ#2比較デモ付き）
+const SAMPLE_ROAST_BATCH_1 = {
+  isHomeRoasted: true,
+  baseGreenBean: 'エチオピア イルガチェフェ コンガ G1',
+  batchLabel: 'Batch #1 中浅煎り (204.5℃ / DTR 15.8%)',
+  roastDate: '2026-10-07',
+  chargeTemp: 194,
+  tpTimeSec: 78,
+  tpTemp: 101,
+  dryEndSec: 265,
+  dryEndTemp: 151,
+  fcsSec: 468,
+  fcsTemp: 195.5,
+  dropSec: 556,
+  dropTemp: 204.5,
+  dtr: 15.8,
+  weightLoss: 13.8,
+  sourceFile: 'ethiopia_konga_batch1.alog',
+  curve: buildSyntheticRoastCurve({
+    chargeTemp: 194,
+    tpTimeSec: 78,
+    tpTemp: 101,
+    dryEndSec: 265,
+    dryEndTemp: 151,
+    fcsSec: 468,
+    fcsTemp: 195.5,
+    dropSec: 556,
+    dropTemp: 204.5,
+  }),
+};
+
+const SAMPLE_ROAST_BATCH_2 = {
+  isHomeRoasted: true,
+  baseGreenBean: 'エチオピア イルガチェフェ コンガ G1',
+  batchLabel: 'Batch #2 中深煎り (213.0℃ / DTR 20.6%)',
+  roastDate: '2026-10-14',
+  chargeTemp: 198,
+  tpTimeSec: 82,
+  tpTemp: 104,
+  dryEndSec: 275,
+  dryEndTemp: 153,
+  fcsSec: 472,
+  fcsTemp: 196.0,
+  dropSec: 595,
+  dropTemp: 213.0,
+  dtr: 20.6,
+  weightLoss: 16.2,
+  sourceFile: 'ethiopia_konga_batch2.alog',
+  curve: buildSyntheticRoastCurve({
+    chargeTemp: 198,
+    tpTimeSec: 82,
+    tpTemp: 104,
+    dryEndSec: 275,
+    dryEndTemp: 153,
+    fcsSec: 472,
+    fcsTemp: 196.0,
+    dropSec: 595,
+    dropTemp: 213.0,
+  }),
+};
+
+// 初期サンプルデータ
+// 通常の購入豆（roastProfileなし）では焙煎UIは一切表示されず、
+// 自家焙煎豆（エチオピア Batch#1 / #2）を選んだときだけArtisanプロファイルが表示されることを確認できます。
 const INITIAL_SAMPLE_LOGS = [
-  // 1. エチオピア イルガチェフェ コンガ（ナチュラル・中浅煎り）: 4回記録
+  // 1A. エチオピア コンガ (自家焙煎 Batch #1 中浅煎り): 3回記録
   {
     id: 'samp-101',
-    beanName: 'エチオピア イルガチェフェ コンガ G1',
+    beanName: 'エチオピア イルガチェフェ コンガ G1 [Batch #1 中浅煎り]',
     origin: 'エチオピア',
     roast: '中浅煎り',
     process: 'ナチュラル',
@@ -129,11 +317,12 @@ const INITIAL_SAMPLE_LOGS = [
     scores: { acidity: 9, bitterness: 3, sweetness: 8, body: 5, aroma: 9, aftertaste: 8 },
     rating: 5,
     tempNote: '冷めると甘み・果実味UP',
-    memo: '開封初日。ストロベリージャムのような華やかな香りと明るい酸味。',
+    memo: '【自家焙煎Batch#1】ストロベリージャムのような華やかな香りと明るい酸味。',
+    roastProfile: SAMPLE_ROAST_BATCH_1,
   },
   {
     id: 'samp-102',
-    beanName: 'エチオピア イルガチェフェ コンガ G1',
+    beanName: 'エチオピア イルガチェフェ コンガ G1 [Batch #1 中浅煎り]',
     origin: 'エチオピア',
     roast: '中浅煎り',
     process: 'ナチュラル',
@@ -142,33 +331,51 @@ const INITIAL_SAMPLE_LOGS = [
     rating: 5,
     tempNote: '冷めると甘み・果実味UP',
     memo: '少し落ち着いて桃やベリーの甘みが前に出てきた。',
+    roastProfile: SAMPLE_ROAST_BATCH_1,
   },
   {
     id: 'samp-103',
-    beanName: 'エチオピア イルガチェフェ コンガ G1',
+    beanName: 'エチオピア イルガチェフェ コンガ G1 [Batch #1 中浅煎り]',
     origin: 'エチオピア',
     roast: '中浅煎り',
     process: 'ナチュラル',
     date: '2026-10-16',
-    scores: { acidity: 8, bitterness: 4, sweetness: 8, body: 5, aroma: 9, aftertaste: 7 },
+    scores: { acidity: 9, bitterness: 2, sweetness: 8, body: 5, aroma: 9, aftertaste: 7 },
     rating: 5,
     tempNote: '変化なし・安定',
-    memo: '紅茶のような質感。いつも通り安定して華やか。',
-  },
-  {
-    id: 'samp-104',
-    beanName: 'エチオピア イルガチェフェ コンガ G1',
-    origin: 'エチオピア',
-    roast: '中浅煎り',
-    process: 'ナチュラル',
-    date: '2026-10-19',
-    scores: { acidity: 9, bitterness: 2, sweetness: 8, body: 5, aroma: 9, aftertaste: 8 },
-    rating: 4,
-    tempNote: '冷めると甘み・果実味UP',
-    memo: '少し酸味を強く感じたが、冷めるとシロップのように甘い。',
+    memo: '紅茶のような質感。DTR15.8%で狙い通りのクリーンな果実味。',
+    roastProfile: SAMPLE_ROAST_BATCH_1,
   },
 
-  // 2. ケニア マサイ AA（ウォッシュト・中深煎り）: フルーティ×ビター両立の例（4回記録）
+  // 1B. 同じエチオピア生豆の別バッチ (自家焙煎 Batch #2 中深煎り): 2回記録 -> バッチ間の味移動を可視化！
+  {
+    id: 'samp-105',
+    beanName: 'エチオピア イルガチェフェ コンガ G1 [Batch #2 中深煎り]',
+    origin: 'エチオピア',
+    roast: '中深煎り',
+    process: 'ナチュラル',
+    date: '2026-10-15',
+    scores: { acidity: 6, bitterness: 7, sweetness: 8, body: 8, aroma: 8, aftertaste: 9 },
+    rating: 5,
+    tempNote: '冷めると甘み・果実味UP',
+    memo: '【自家焙煎Batch#2】213℃・DTR20.6%まで伸ばしたロット。ベリーチョコ感が出て右上象限へ移動！',
+    roastProfile: SAMPLE_ROAST_BATCH_2,
+  },
+  {
+    id: 'samp-106',
+    beanName: 'エチオピア イルガチェフェ コンガ G1 [Batch #2 中深煎り]',
+    origin: 'エチオピア',
+    roast: '中深煎り',
+    process: 'ナチュラル',
+    date: '2026-10-18',
+    scores: { acidity: 7, bitterness: 6, sweetness: 9, body: 7, aroma: 8, aftertaste: 8 },
+    rating: 5,
+    tempNote: '冷めるとまろやかに',
+    memo: '赤ワインとダークチョコの余韻。浅煎りバッチとは別物の芳醇さ。',
+    roastProfile: SAMPLE_ROAST_BATCH_2,
+  },
+
+  // 2. ケニア マサイ AA（通常の購入豆・roastProfileなし）: 3回記録
   {
     id: 'samp-201',
     beanName: 'ケニア マサイ AA',
@@ -206,7 +413,7 @@ const INITIAL_SAMPLE_LOGS = [
     memo: 'ブラッドオレンジのようなジューシーさとどっしりしたコク。',
   },
 
-  // 3. ブラジル ショコラ サントアントニオ（ナチュラル・中煎り）: マイルド・バランス系（3回記録）
+  // 3. ブラジル ショコラ サントアントニオ（通常の購入豆）: 3回記録
   {
     id: 'samp-301',
     beanName: 'ブラジル ショコラ サントアントニオ',
@@ -244,7 +451,7 @@ const INITIAL_SAMPLE_LOGS = [
     memo: 'ブレが少なくいつも安心するバランス感。',
   },
 
-  // 4. インドネシア マンデリン ビンタンリマ（スマトラ・深煎り）: 王道ビター重厚系（3回記録）
+  // 4. インドネシア マンデリン ビンタンリマ（通常の購入豆）: 3回記録
   {
     id: 'samp-401',
     beanName: 'インドネシア マンデリン ビンタンリマ',
@@ -282,7 +489,7 @@ const INITIAL_SAMPLE_LOGS = [
     memo: '奥に黒糖のような甘みとアーシーな余韻が長く残る。',
   },
 
-  // 5. グアテマラ アンティグア アゾテア（ウォッシュト・中煎り）: 3回記録（少し日によるブレがある例）
+  // 5. グアテマラ アンティグア アゾテア（通常の購入豆・マップ中央の基準アンカー）: 3回記録
   {
     id: 'samp-501',
     beanName: 'グアテマラ アンティグア アゾテア',
@@ -290,10 +497,10 @@ const INITIAL_SAMPLE_LOGS = [
     roast: '中煎り',
     process: 'ウォッシュト',
     date: '2026-10-09',
-    scores: { acidity: 6, bitterness: 5, sweetness: 7, body: 6, aroma: 7, aftertaste: 5 },
+    scores: { acidity: 5, bitterness: 5, sweetness: 6, body: 5, aroma: 6, aftertaste: 5 },
     rating: 4,
     tempNote: '変化なし・安定',
-    memo: '青リンゴのような爽やかさとチョコレートのバランス。',
+    memo: '生豆本舗のシティロースト。酸味と苦味がちょうど真ん中で基準になる一杯。',
   },
   {
     id: 'samp-502',
@@ -302,10 +509,10 @@ const INITIAL_SAMPLE_LOGS = [
     roast: '中煎り',
     process: 'ウォッシュト',
     date: '2026-10-13',
-    scores: { acidity: 5, bitterness: 7, sweetness: 6, body: 7, aroma: 6, aftertaste: 6 },
-    rating: 3,
-    tempNote: '冷めると酸味が立つ',
-    memo: '今日は少しビター寄りに感じた。体調による感覚差かも。',
+    scores: { acidity: 5, bitterness: 6, sweetness: 5, body: 6, aroma: 5, aftertaste: 5 },
+    rating: 4,
+    tempNote: '変化なし・安定',
+    memo: 'ミルクチョコと柑橘のバランス。ど真ん中の物差しとして最適。',
   },
   {
     id: 'samp-503',
@@ -314,36 +521,10 @@ const INITIAL_SAMPLE_LOGS = [
     roast: '中煎り',
     process: 'ウォッシュト',
     date: '2026-10-17',
-    scores: { acidity: 7, bitterness: 4, sweetness: 8, body: 6, aroma: 7, aftertaste: 5 },
+    scores: { acidity: 6, bitterness: 5, sweetness: 6, body: 5, aroma: 6, aftertaste: 5 },
     rating: 4,
     tempNote: '冷めると甘み・果実味UP',
-    memo: '柑橘の明るい酸とキャラメルの甘みが綺麗にまとまった。',
-  },
-
-  // 6. コロンビア ピンクブルボン（ハニー・浅煎り）: 2回記録
-  {
-    id: 'samp-601',
-    beanName: 'コロンビア ウィラ ピンクブルボン',
-    origin: 'コロンビア',
-    roast: '浅煎り',
-    process: 'ハニー',
-    date: '2026-10-15',
-    scores: { acidity: 9, bitterness: 2, sweetness: 7, body: 3, aroma: 8, aftertaste: 4 },
-    rating: 4,
-    tempNote: '冷めると甘み・果実味UP',
-    memo: 'ピンクグレープフルーツのような弾ける酸味と驚きのキレの良さ。',
-  },
-  {
-    id: 'samp-602',
-    beanName: 'コロンビア ウィラ ピンクブルボン',
-    origin: 'コロンビア',
-    roast: '浅煎り',
-    process: 'ハニー',
-    date: '2026-10-20',
-    scores: { acidity: 8, bitterness: 2, sweetness: 8, body: 4, aroma: 9, aftertaste: 5 },
-    rating: 5,
-    tempNote: '冷めると甘み・果実味UP',
-    memo: 'ハチミツレモンティーのよう。軽やかで朝にぴったり。',
+    memo: '今日も安定したオール5〜6の味わい。',
   },
 ];
 
@@ -358,6 +539,7 @@ const state = {
   colorMode: 'roast',
   showVariance: true,
   showSweetSpot: true,
+  showBatchLinks: true,
   filters: {
     search: '',
     origin: '',
@@ -365,10 +547,11 @@ const state = {
     process: '',
   },
   sortBy: 'recent',
-  renderedBeanPositions: [], // キャンバス上のヒットテスト用
+  renderedBeanPositions: [],
+  currentModalCurve: null, // モーダルで読み込んだ .alog 波形データ一時保持
+  currentModalSourceFile: '',
 };
 
-// DOM参照
 const els = {};
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -389,10 +572,14 @@ function cacheElements() {
   els.axisPresets = document.getElementById('axisPresets');
   els.xAxisSelect = document.getElementById('xAxisSelect');
   els.yAxisSelect = document.getElementById('yAxisSelect');
+  els.xAxisRoastGroup = document.getElementById('xAxisRoastGroup');
+  els.yAxisRoastGroup = document.getElementById('yAxisRoastGroup');
   els.swapAxesBtn = document.getElementById('swapAxesBtn');
   els.colorModeSelect = document.getElementById('colorModeSelect');
   els.showVarianceToggle = document.getElementById('showVarianceToggle');
   els.showSweetSpotToggle = document.getElementById('showSweetSpotToggle');
+  els.batchTrajectoryToggleWrap = document.getElementById('batchTrajectoryToggleWrap');
+  els.showBatchLinksToggle = document.getElementById('showBatchLinksToggle');
 
   els.searchBeanInput = document.getElementById('searchBeanInput');
   els.filterOriginSelect = document.getElementById('filterOriginSelect');
@@ -413,6 +600,13 @@ function cacheElements() {
   els.stabilityBadge = document.getElementById('stabilityBadge');
   els.radarCanvas = document.getElementById('radarCanvas');
   els.inspectorScoreGrid = document.getElementById('inspectorScoreGrid');
+
+  // 自家焙煎インスペクター要素（自家焙煎データがある時のみ表示）
+  els.inspectorRoastSection = document.getElementById('inspectorRoastSection');
+  els.roastBatchBadge = document.getElementById('roastBatchBadge');
+  els.roastCurveCanvas = document.getElementById('roastCurveCanvas');
+  els.inspectorRoastSpecs = document.getElementById('inspectorRoastSpecs');
+
   els.historyCountTitle = document.getElementById('historyCountTitle');
   els.inspectorHistoryList = document.getElementById('inspectorHistoryList');
 
@@ -438,6 +632,23 @@ function cacheElements() {
   els.roastSelect = document.getElementById('roastSelect');
   els.processSelect = document.getElementById('processSelect');
   els.sliderAutoFillNotice = document.getElementById('sliderAutoFillNotice');
+
+  // Home Roast Modal Fields
+  els.isHomeRoastedCheckbox = document.getElementById('isHomeRoastedCheckbox');
+  els.homeRoastFormPanel = document.getElementById('homeRoastFormPanel');
+  els.alogDropzone = document.getElementById('alogDropzone');
+  els.alogStatusText = document.getElementById('alogStatusText');
+  els.alogFileInput = document.getElementById('alogFileInput');
+  els.fillDemoAlogBtn = document.getElementById('fillDemoAlogBtn');
+  els.baseGreenBeanInput = document.getElementById('baseGreenBeanInput');
+  els.batchLabelInput = document.getElementById('batchLabelInput');
+  els.roastChargeTemp = document.getElementById('roastChargeTemp');
+  els.roastFcsTime = document.getElementById('roastFcsTime');
+  els.roastFcsTemp = document.getElementById('roastFcsTemp');
+  els.roastDropTime = document.getElementById('roastDropTime');
+  els.roastDropTemp = document.getElementById('roastDropTemp');
+  els.roastDtr = document.getElementById('roastDtr');
+  els.roastWeightLoss = document.getElementById('roastWeightLoss');
 
   els.sliders = {
     acidity: document.getElementById('scoreAcidity'),
@@ -471,7 +682,7 @@ function loadInitialData() {
       state.logs = JSON.parse(saved);
       state.isSampleMode = isSample === 'true';
     } catch (e) {
-      state.logs = [...INITIAL_SAMPLE_LOGS];
+      state.logs = JSON.parse(JSON.stringify(INITIAL_SAMPLE_LOGS));
       state.isSampleMode = true;
     }
   } else {
@@ -480,7 +691,6 @@ function loadInitialData() {
     saveToStorage();
   }
 
-  // 初回に最初の銘柄を選択状態にする
   const beans = getAggregatedBeans();
   if (beans.length > 0) {
     state.selectedBeanName = beans[0].beanName;
@@ -492,7 +702,7 @@ function saveToStorage() {
   localStorage.setItem(SAMPLE_FLAG_KEY, String(state.isSampleMode));
 }
 
-// 銘柄ごとに記録を集約し、平均値とブレ（標準偏差・個別座標）を計算する
+// 銘柄ごとに記録を集約し、平均値・ブレ・自家焙煎プロファイルをまとめる
 function getAggregatedBeans() {
   const map = new Map();
 
@@ -505,22 +715,24 @@ function getAggregatedBeans() {
         origin: log.origin || '不明',
         roast: log.roast || '中煎り',
         process: log.process || 'ウォッシュト',
+        roastProfile: null,
         logs: [],
       });
     }
     const entry = map.get(key);
     entry.logs.push(log);
-    // 最新の記録の属性を優先反映
     entry.origin = log.origin || entry.origin;
     entry.roast = log.roast || entry.roast;
     entry.process = log.process || entry.process;
+    if (log.roastProfile && log.roastProfile.isHomeRoasted) {
+      entry.roastProfile = log.roastProfile;
+    }
   }
 
   const scoreKeys = ['acidity', 'bitterness', 'sweetness', 'body', 'aroma', 'aftertaste'];
   const result = [];
 
   for (const bean of map.values()) {
-    // 日付降順でソート
     bean.logs.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     const count = bean.logs.length;
 
@@ -537,8 +749,6 @@ function getAggregatedBeans() {
 
     const avgRating =
       bean.logs.reduce((acc, l) => acc + Number(l.rating || 4), 0) / count;
-
-    // 全体安定度（6軸の標準偏差の平均）
     const meanSd =
       Object.values(sdScores).reduce((a, b) => a + b, 0) / scoreKeys.length;
 
@@ -623,6 +833,11 @@ function bindEvents() {
     drawFlavorMap();
   });
 
+  els.showBatchLinksToggle.addEventListener('change', () => {
+    state.showBatchLinks = els.showBatchLinksToggle.checked;
+    drawFlavorMap();
+  });
+
   // フィルター
   els.searchBeanInput.addEventListener('input', () => {
     state.filters.search = els.searchBeanInput.value.trim();
@@ -700,15 +915,55 @@ function bindEvents() {
     if (e.target === els.logModalBackdrop) closeLogModal();
   });
 
-  // 既存銘柄セレクトで自動補完
-  els.existingBeanSelect.addEventListener('change', () => {
-    const val = els.existingBeanSelect.value;
-    if (val) {
-      applyBeanAutoFill(val);
+  // 自家焙煎チェックボックス開閉
+  els.isHomeRoastedCheckbox.addEventListener('change', () => {
+    els.homeRoastFormPanel.hidden = !els.isHomeRoastedCheckbox.checked;
+    if (els.isHomeRoastedCheckbox.checked && !els.baseGreenBeanInput.value) {
+      els.baseGreenBeanInput.value = els.beanNameInput.value.replace(/\s*\[.*\]$/, '').trim();
     }
   });
 
-  // 銘柄名の手入力でも既存と一致したら自動補完
+  // 1ハゼ時間・排出時間からDTR(%)を自動計算
+  const recalcDtr = () => {
+    const fcsSec = parseMmSsToSec(els.roastFcsTime.value);
+    const dropSec = parseMmSsToSec(els.roastDropTime.value);
+    if (fcsSec > 0 && dropSec > fcsSec) {
+      const dtr = ((dropSec - fcsSec) / dropSec) * 100;
+      els.roastDtr.value = dtr.toFixed(1);
+    }
+  };
+  els.roastFcsTime.addEventListener('change', recalcDtr);
+  els.roastDropTime.addEventListener('change', recalcDtr);
+
+  // .alog ドラッグ＆ドロップとファイル選択
+  els.alogDropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    els.alogDropzone.classList.add('dragover');
+  });
+  els.alogDropzone.addEventListener('dragleave', () => {
+    els.alogDropzone.classList.remove('dragover');
+  });
+  els.alogDropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    els.alogDropzone.classList.remove('dragover');
+    const file = e.dataTransfer?.files?.[0];
+    if (file) handleAlogFile(file);
+  });
+  els.alogFileInput.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (file) handleAlogFile(file);
+  });
+  els.fillDemoAlogBtn.addEventListener('click', () => {
+    applyRoastProfileToModal(SAMPLE_ROAST_BATCH_1);
+    els.alogStatusText.innerHTML = `<strong style="color:#9e3d1a">✓ デモ用Artisanプロファイル波形をセットしました！</strong>`;
+  });
+
+  // 既存銘柄セレクトで自動補完
+  els.existingBeanSelect.addEventListener('change', () => {
+    const val = els.existingBeanSelect.value;
+    if (val) applyBeanAutoFill(val);
+  });
+
   els.beanNameInput.addEventListener('change', () => {
     const val = els.beanNameInput.value.trim();
     const beans = getAggregatedBeans();
@@ -736,6 +991,168 @@ function bindEvents() {
   els.tastingLogForm.addEventListener('submit', handleFormSubmit);
 }
 
+// ============================================================================
+// Artisan (.alog) パーサー
+// ============================================================================
+function handleAlogFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const profile = parseArtisanAlogContent(reader.result, file.name);
+      applyRoastProfileToModal(profile);
+      els.alogStatusText.innerHTML = `<strong style="color:#2d5a3f">✓ ${escapeHtml(file.name)} を解析しました（排出 ${profile.dropTemp}℃ / DTR ${profile.dtr}%）</strong>`;
+    } catch (err) {
+      alert('Artisan (.alog) ファイルの解析に失敗しました。手動で数値を入力することも可能です。');
+    }
+    els.alogFileInput.value = '';
+  };
+  reader.readAsText(file);
+}
+
+function parseArtisanAlogContent(rawText, fileName) {
+  // Artisanの .alog は Python dict 形式 (True, False, None, 単一引用符) または JSON
+  let data = null;
+  try {
+    data = JSON.parse(rawText);
+  } catch (_) {
+    // PythonリテラルをJSON互換へ変換してパース、または正規表現で主要配列を抽出
+    try {
+      const jsonLike = rawText
+        .replace(/\bTrue\b/g, 'true')
+        .replace(/\bFalse\b/g, 'false')
+        .replace(/\bNone\b/g, 'null')
+        .replace(/'/g, '"');
+      data = JSON.parse(jsonLike);
+    } catch (_e2) {
+      data = extractAlogArraysRegex(rawText);
+    }
+  }
+
+  if (!data || !Array.isArray(data.timex)) {
+    throw new Error('Invalid alog structure');
+  }
+
+  const timex = data.timex.map(Number);
+  const etArr = (data.temp1 || []).map(Number);
+  const btArr = (data.temp2 || data.temp1 || []).map(Number);
+  // timeindex: [CHARGE, DRY, FCs, FCe, SCs, SCe, DROP, COOL]
+  const tidx = Array.isArray(data.timeindex) ? data.timeindex : [-1, 0, 0, 0, 0, 0, 0, 0];
+
+  const chargeIdx = tidx[0] >= 0 ? tidx[0] : 0;
+  const dryIdx = tidx[1] > 0 ? tidx[1] : Math.floor(timex.length * 0.45);
+  const fcsIdx = tidx[2] > 0 ? tidx[2] : Math.floor(timex.length * 0.78);
+  const dropIdx = tidx[6] > 0 ? tidx[6] : timex.length - 1;
+
+  const tCharge = timex[chargeIdx] || 0;
+  const chargeTemp = Number((btArr[chargeIdx] || 195).toFixed(1));
+  const dryEndSec = Math.max(0, Math.round((timex[dryIdx] || 270) - tCharge));
+  const dryEndTemp = Number((btArr[dryIdx] || 150).toFixed(1));
+  const fcsSec = Math.max(0, Math.round((timex[fcsIdx] || 460) - tCharge));
+  const fcsTemp = Number((btArr[fcsIdx] || 196).toFixed(1));
+  const dropSec = Math.max(1, Math.round((timex[dropIdx] || 560) - tCharge));
+  const dropTemp = Number((btArr[dropIdx] || 206).toFixed(1));
+
+  // TP (Charge〜DryEndの最小BT)
+  let tpIdx = chargeIdx;
+  for (let i = chargeIdx; i <= Math.min(dryIdx, btArr.length - 1); i++) {
+    if (btArr[i] > 0 && btArr[i] < btArr[tpIdx]) tpIdx = i;
+  }
+  const tpTimeSec = Math.max(0, Math.round((timex[tpIdx] || 75) - tCharge));
+  const tpTemp = Number((btArr[tpIdx] || 100).toFixed(1));
+
+  const dtr = dropSec > fcsSec ? Number((((dropSec - fcsSec) / dropSec) * 100).toFixed(1)) : 16.0;
+
+  let weightLoss = 14.5;
+  if (Array.isArray(data.weight) && Number(data.weight[0]) > 0 && Number(data.weight[1]) > 0) {
+    weightLoss = Number((((data.weight[0] - data.weight[1]) / data.weight[0]) * 100).toFixed(1));
+  }
+
+  // Charge〜Drop間を約50点に間引いて軽量化
+  const span = Math.max(1, dropIdx - chargeIdx);
+  const step = Math.max(1, Math.floor(span / 50));
+  const cTime = [];
+  const cBt = [];
+  const cEt = [];
+  const cRor = [];
+
+  for (let i = chargeIdx; i <= dropIdx; i += step) {
+    const relSec = Math.round(timex[i] - tCharge);
+    cTime.push(relSec);
+    cBt.push(Number((btArr[i] || 0).toFixed(1)));
+    cEt.push(Number((etArr[i] || 0).toFixed(1)));
+  }
+
+  for (let i = 0; i < cTime.length; i++) {
+    if (i === 0 || cTime[i] < tpTimeSec) {
+      cRor.push(null);
+    } else {
+      const dtMin = (cTime[i] - cTime[i - 1]) / 60;
+      cRor.push(dtMin > 0 ? Number(((cBt[i] - cBt[i - 1]) / dtMin).toFixed(1)) : null);
+    }
+  }
+
+  return {
+    isHomeRoasted: true,
+    baseGreenBean: data.beans || data.title || '',
+    batchLabel: data.title ? `${data.title} (${dropTemp}℃ / DTR ${dtr}%)` : `排出 ${dropTemp}℃ / DTR ${dtr}%`,
+    roastDate: data.roastisodate || '',
+    chargeTemp,
+    tpTimeSec,
+    tpTemp,
+    dryEndSec,
+    dryEndTemp,
+    fcsSec,
+    fcsTemp,
+    dropSec,
+    dropTemp,
+    dtr,
+    weightLoss,
+    sourceFile: fileName,
+    curve: { timex: cTime, bt: cBt, et: cEt, ror: cRor },
+  };
+}
+
+function extractAlogArraysRegex(raw) {
+  const grabNumArray = (key) => {
+    const m = raw.match(new RegExp(`['"]${key}['"]\\s*:\\s*\\[([^\\]]+)\\]`));
+    if (!m) return null;
+    return m[1].split(',').map((s) => Number(s.trim()));
+  };
+  const grabStr = (key) => {
+    const m = raw.match(new RegExp(`['"]${key}['"]\\s*:\\s*['"]([^'"]*)['"]`));
+    return m ? m[1] : '';
+  };
+  return {
+    timex: grabNumArray('timex'),
+    temp1: grabNumArray('temp1'),
+    temp2: grabNumArray('temp2'),
+    timeindex: grabNumArray('timeindex'),
+    weight: grabNumArray('weight'),
+    title: grabStr('title'),
+    beans: grabStr('beans'),
+    roastisodate: grabStr('roastisodate'),
+  };
+}
+
+function applyRoastProfileToModal(prof) {
+  if (!prof) return;
+  els.isHomeRoastedCheckbox.checked = true;
+  els.homeRoastFormPanel.hidden = false;
+  if (prof.baseGreenBean && !els.baseGreenBeanInput.value) {
+    els.baseGreenBeanInput.value = prof.baseGreenBean;
+  }
+  els.batchLabelInput.value = prof.batchLabel || '';
+  els.roastChargeTemp.value = prof.chargeTemp ?? 195;
+  els.roastFcsTime.value = formatSecToMmSs(prof.fcsSec ?? 470);
+  els.roastFcsTemp.value = prof.fcsTemp ?? 196;
+  els.roastDropTime.value = formatSecToMmSs(prof.dropSec ?? 560);
+  els.roastDropTemp.value = prof.dropTemp ?? 206;
+  els.roastDtr.value = prof.dtr ?? 16.0;
+  els.roastWeightLoss.value = prof.weightLoss ?? 14.5;
+  state.currentModalCurve = prof.curve || null;
+  state.currentModalSourceFile = prof.sourceFile || '';
+}
+
 function syncPresetActiveState() {
   const buttons = els.axisPresets.querySelectorAll('.preset-pill');
   buttons.forEach((btn) => {
@@ -744,17 +1161,44 @@ function syncPresetActiveState() {
   });
 }
 
+// 自家焙煎データが存在するかどうかを判定し、UIの表示・非表示を自動で切り替える
+function syncHomeRoastVisibility(beans) {
+  const hasAnyHomeRoasted = beans.some((b) => b.roastProfile && b.roastProfile.isHomeRoasted);
+
+  // マップ上の焙煎系プリセット・軸セレクト・バッチ比較トグルを「自家焙煎データがある時のみ」表示
+  els.axisPresets.querySelectorAll('.preset-roast-only').forEach((el) => {
+    el.hidden = !hasAnyHomeRoasted;
+  });
+  els.xAxisRoastGroup.hidden = !hasAnyHomeRoasted;
+  els.yAxisRoastGroup.hidden = !hasAnyHomeRoasted;
+  els.batchTrajectoryToggleWrap.hidden = !hasAnyHomeRoasted;
+
+  // もし自家焙煎データが1件もないのに焙煎軸が選ばれていたら味覚軸に戻す
+  if (!hasAnyHomeRoasted) {
+    if (AXES_META[state.xAxis]?.isRoastAxis) {
+      state.xAxis = 'acidity';
+      els.xAxisSelect.value = 'acidity';
+    }
+    if (AXES_META[state.yAxis]?.isRoastAxis) {
+      state.yAxis = 'bitterness';
+      els.yAxisSelect.value = 'bitterness';
+    }
+    syncPresetActiveState();
+  }
+}
+
 function refreshAll() {
   els.sampleModeBadge.hidden = !state.isSampleMode;
-  updateOriginFilterOptions();
+  const allBeans = getAggregatedBeans();
+  syncHomeRoastVisibility(allBeans);
+  updateOriginFilterOptions(allBeans);
   renderLegend();
   drawFlavorMap();
   renderBeanCatalog();
   renderInspector();
 }
 
-function updateOriginFilterOptions() {
-  const beans = getAggregatedBeans();
+function updateOriginFilterOptions(beans) {
   const origins = Array.from(new Set(beans.map((b) => b.origin))).sort();
   const current = state.filters.origin;
   els.filterOriginSelect.innerHTML =
@@ -816,7 +1260,6 @@ function renderLegend() {
     .join('');
 }
 
-// 四象限タイトル取得
 function getQuadrantDescriptions(xKey, yKey) {
   const directKey = `${xKey}__${yKey}`;
   if (QUADRANT_TITLES[directKey]) {
@@ -867,15 +1310,23 @@ function drawFlavorMap() {
   const centerX = pad.left + plotW / 2;
   const centerY = pad.top + plotH / 2;
 
-  // スコア(1〜10) -> キャンバス座標への変換
-  const toX = (val) => pad.left + ((val - 1) / 9) * plotW;
-  const toY = (val) => pad.top + plotH - ((val - 1) / 9) * plotH;
+  const xMeta = AXES_META[state.xAxis];
+  const yMeta = AXES_META[state.yAxis];
+
+  // 任意の最小〜最大スケールをキャンバス座標へ変換
+  const toX = (val) => {
+    const clamped = Math.max(xMeta.min, Math.min(xMeta.max, val));
+    return pad.left + ((clamped - xMeta.min) / (xMeta.max - xMeta.min)) * plotW;
+  };
+  const toY = (val) => {
+    const clamped = Math.max(yMeta.min, Math.min(yMeta.max, val));
+    return pad.top + plotH - ((clamped - yMeta.min) / (yMeta.max - yMeta.min)) * plotH;
+  };
 
   // 背景
   ctx.fillStyle = '#fdfbf7';
   ctx.fillRect(0, 0, width, height);
 
-  // プロット領域のパーチメント背景
   const bgGrad = ctx.createRadialGradient(
     centerX,
     centerY,
@@ -889,13 +1340,15 @@ function drawFlavorMap() {
   ctx.fillStyle = bgGrad;
   ctx.fillRect(pad.left, pad.top, plotW, plotH);
 
-  // 1〜10の目盛りグリッド線
+  // グリッド目盛り描画（通常は1〜10の10分割、焙煎軸の場合は9分割ステップ）
   ctx.lineWidth = 1;
-  for (let s = 1; s <= 10; s++) {
-    const x = toX(s);
-    const y = toY(s);
+  for (let i = 0; i <= 9; i++) {
+    const xVal = xMeta.min + ((xMeta.max - xMeta.min) * i) / 9;
+    const yVal = yMeta.min + ((yMeta.max - yMeta.min) * i) / 9;
+    const x = pad.left + (plotW * i) / 9;
+    const y = pad.top + plotH - (plotH * i) / 9;
 
-    ctx.strokeStyle = s === 5 || s === 6 ? 'rgba(138, 115, 99, 0.16)' : 'rgba(138, 115, 99, 0.09)';
+    ctx.strokeStyle = i === 4 || i === 5 ? 'rgba(138, 115, 99, 0.16)' : 'rgba(138, 115, 99, 0.09)';
     ctx.beginPath();
     ctx.moveTo(x, pad.top);
     ctx.lineTo(x, pad.top + plotH);
@@ -906,14 +1359,15 @@ function drawFlavorMap() {
     ctx.lineTo(pad.left + plotW, y);
     ctx.stroke();
 
-    // 目盛り数字
     ctx.fillStyle = 'rgba(138, 115, 99, 0.65)';
     ctx.font = '500 10px "JetBrains Mono", monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(String(s), x, pad.top + plotH + 15);
+    const xLabelStr = xMeta.isRoastAxis ? xVal.toFixed(0) + xMeta.unit : String(Math.round(xVal));
+    ctx.fillText(xLabelStr, x, pad.top + plotH + 15);
 
     ctx.textAlign = 'right';
-    ctx.fillText(String(s), pad.left - 8, y + 3);
+    const yLabelStr = yMeta.isRoastAxis ? yVal.toFixed(0) + yMeta.unit : String(Math.round(yVal));
+    ctx.fillText(yLabelStr, pad.left - 8, y + 3);
   }
 
   // 四象限のコーナーラベル描画
@@ -923,7 +1377,7 @@ function drawFlavorMap() {
   drawQuadrantWatermark(ctx, pad.left + 14, pad.top + plotH - 28, quads.bl, 'left');
   drawQuadrantWatermark(ctx, pad.left + plotW - 14, pad.top + plotH - 28, quads.br, 'right');
 
-  // 中央の十字線（5.5が1〜10の真ん中）
+  // 中央の十字線
   ctx.save();
   ctx.strokeStyle = '#9c7e65';
   ctx.lineWidth = 1.6;
@@ -941,10 +1395,6 @@ function drawFlavorMap() {
   ctx.lineWidth = 1.5;
   ctx.strokeRect(pad.left, pad.top, plotW, plotH);
 
-  // 軸の両端ラベル
-  const xMeta = AXES_META[state.xAxis];
-  const yMeta = AXES_META[state.yAxis];
-
   // X軸ラベル
   ctx.font = '700 12px "Noto Sans JP", sans-serif';
   ctx.fillStyle = '#4a372b';
@@ -954,30 +1404,35 @@ function drawFlavorMap() {
   ctx.font = '600 11px "Noto Sans JP", sans-serif';
   ctx.fillStyle = '#8a7363';
   ctx.textAlign = 'left';
-  ctx.fillText(`◀ 1: ${xMeta.lowPole}`, pad.left, height - 12);
+  ctx.fillText(`◀ ${xMeta.lowPole}`, pad.left, height - 12);
   ctx.textAlign = 'right';
-  ctx.fillText(`${xMeta.highPole} :10 ▶`, pad.left + plotW, height - 12);
+  ctx.fillText(`${xMeta.highPole} ▶`, pad.left + plotW, height - 12);
 
-  // Y軸ラベル（上部と下部）
+  // Y軸ラベル
   ctx.textAlign = 'center';
   ctx.font = '700 12px "Noto Sans JP", sans-serif';
   ctx.fillStyle = '#4a372b';
-  ctx.fillText(`▲ 10: ${yMeta.highPole} （縦軸: ${yMeta.label}）`, centerX, 20);
+  ctx.fillText(`▲ ${yMeta.highPole} （縦軸: ${yMeta.label}）`, centerX, 20);
 
   ctx.font = '600 11px "Noto Sans JP", sans-serif';
   ctx.fillStyle = '#8a7363';
-  ctx.fillText(`▼ 1: ${yMeta.lowPole}`, centerX, 37);
+  ctx.fillText(`▼ ${yMeta.lowPole}`, centerX, 37);
 
-  // フィルター済み銘柄を取得
+  // フィルター済み銘柄を取得（焙煎軸が選ばれている場合は焙煎データを持つ豆のみプロット）
   const allBeans = getAggregatedBeans();
-  const beans = getFilteredBeans(allBeans);
+  const filtered = getFilteredBeans(allBeans);
+  const beans = filtered.filter((b) => {
+    const xv = xMeta.getValue(b.avgScores, b.roastProfile);
+    const yv = yMeta.getValue(b.avgScores, b.roastProfile);
+    return xv !== null && !Number.isNaN(xv) && yv !== null && !Number.isNaN(yv);
+  });
 
   // 1. 「好みゾーン（スイートスポット）」の背景グロー描画
   if (state.showSweetSpot) {
     for (const bean of beans) {
       if (bean.avgRating >= 4.4) {
-        const bx = toX(xMeta.getValue(bean.avgScores));
-        const by = toY(yMeta.getValue(bean.avgScores));
+        const bx = toX(xMeta.getValue(bean.avgScores, bean.roastProfile));
+        const by = toY(yMeta.getValue(bean.avgScores, bean.roastProfile));
         const radius = bean.avgRating >= 4.8 ? 85 : 62;
         const glow = ctx.createRadialGradient(bx, by, 4, bx, by, radius);
         glow.addColorStop(0, 'rgba(217, 155, 56, 0.22)');
@@ -991,7 +1446,7 @@ function drawFlavorMap() {
     }
   }
 
-  // 2. 「日々の評価ブレ（過去各回のプロット点と広がり楕円）」の透過描画
+  // 2. 「日々の評価ブレ」の透過描画
   if (state.showVariance) {
     for (const bean of beans) {
       if (bean.logs.length < 2) continue;
@@ -999,18 +1454,17 @@ function drawFlavorMap() {
         bean.beanName === state.selectedBeanName || bean.beanName === state.hoveredBeanName;
       const baseColor = getBeanColor(bean);
 
-      const avgX = toX(xMeta.getValue(bean.avgScores));
-      const avgY = toY(yMeta.getValue(bean.avgScores));
+      const avgX = toX(xMeta.getValue(bean.avgScores, bean.roastProfile));
+      const avgY = toY(yMeta.getValue(bean.avgScores, bean.roastProfile));
 
       const pts = bean.logs.map((l) => ({
-        x: toX(xMeta.getValue(l.scores)),
-        y: toY(yMeta.getValue(l.scores)),
+        x: toX(xMeta.getValue(l.scores, l.roastProfile || bean.roastProfile)),
+        y: toY(yMeta.getValue(l.scores, l.roastProfile || bean.roastProfile)),
         date: l.date,
       }));
 
-      // X方向・Y方向の広がり（最小14pxの半径を持たせた透過楕円）
-      const maxDx = Math.max(12, ...pts.map((p) => Math.abs(p.x - avgX)) ) + 8;
-      const maxDy = Math.max(12, ...pts.map((p) => Math.abs(p.y - avgY)) ) + 8;
+      const maxDx = Math.max(12, ...pts.map((p) => Math.abs(p.x - avgX))) + 8;
+      const maxDy = Math.max(12, ...pts.map((p) => Math.abs(p.y - avgY))) + 8;
 
       ctx.save();
       ctx.beginPath();
@@ -1023,7 +1477,6 @@ function drawFlavorMap() {
       ctx.stroke();
       ctx.restore();
 
-      // 個別ログの点と平均点への細い接続線
       for (const pt of pts) {
         ctx.save();
         ctx.strokeStyle = hexToRgba(baseColor, isFocused ? 0.55 : 0.25);
@@ -1042,17 +1495,47 @@ function drawFlavorMap() {
     }
   }
 
-  // 3. 各銘柄のメインプロット（平均位置）描画
+  // 2.5 🔥 同一生豆の別バッチ比較矢印（仕様案B）
+  if (state.showBatchLinks) {
+    const groups = new Map();
+    for (const bean of beans) {
+      const groupName = bean.roastProfile?.baseGreenBean?.trim();
+      if (!groupName) continue;
+      if (!groups.has(groupName)) groups.set(groupName, []);
+      groups.get(groupName).push(bean);
+    }
+
+    for (const [, batchBeans] of groups.entries()) {
+      if (batchBeans.length < 2) continue;
+      // 排出温度または日付順に並べて矢印で結ぶ
+      batchBeans.sort(
+        (a, b) => (a.roastProfile?.dropTemp || 0) - (b.roastProfile?.dropTemp || 0)
+      );
+      for (let i = 0; i < batchBeans.length - 1; i++) {
+        const b1 = batchBeans[i];
+        const b2 = batchBeans[i + 1];
+        const x1 = toX(xMeta.getValue(b1.avgScores, b1.roastProfile));
+        const y1 = toY(yMeta.getValue(b1.avgScores, b1.roastProfile));
+        const x2 = toX(xMeta.getValue(b2.avgScores, b2.roastProfile));
+        const y2 = toY(yMeta.getValue(b2.avgScores, b2.roastProfile));
+
+        drawBatchTrajectoryArrow(ctx, x1, y1, x2, y2, b1, b2);
+      }
+    }
+  }
+
+  // 3. 各銘柄のメインプロット描画
   state.renderedBeanPositions = [];
 
   for (const bean of beans) {
-    const rawX = xMeta.getValue(bean.avgScores);
-    const rawY = yMeta.getValue(bean.avgScores);
+    const rawX = xMeta.getValue(bean.avgScores, bean.roastProfile);
+    const rawY = yMeta.getValue(bean.avgScores, bean.roastProfile);
     const cx = toX(rawX);
     const cy = toY(rawY);
     const color = getBeanColor(bean);
     const isSelected = bean.beanName === state.selectedBeanName;
     const isHovered = bean.beanName === state.hoveredBeanName;
+    const isHomeRoasted = Boolean(bean.roastProfile?.isHomeRoasted);
     const radius = 9 + Math.min(5, bean.count * 1.1);
 
     state.renderedBeanPositions.push({
@@ -1065,7 +1548,6 @@ function drawFlavorMap() {
       radius: radius + 4,
     });
 
-    // 選択リング
     if (isSelected || isHovered) {
       ctx.save();
       ctx.beginPath();
@@ -1087,12 +1569,12 @@ function drawFlavorMap() {
     ctx.shadowBlur = 6;
     ctx.shadowOffsetY = 2;
     ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = '#fdfbf7';
+    ctx.lineWidth = isHomeRoasted ? 2.4 : 2;
+    ctx.strokeStyle = isHomeRoasted ? '#f3b37a' : '#fdfbf7';
     ctx.stroke();
     ctx.restore();
 
-    // ノード内の記録回数表示（2回以上の場合）
+    // ノード内の記録回数
     ctx.fillStyle = '#ffffff';
     ctx.font = '700 9.5px "JetBrains Mono", monospace';
     ctx.textAlign = 'center';
@@ -1100,14 +1582,15 @@ function drawFlavorMap() {
     ctx.fillText(`${bean.count}`, cx, cy + 0.5);
 
     // 銘柄名ラベル
-    const label = bean.beanName.length > 15 ? bean.beanName.slice(0, 14) + '…' : bean.beanName;
+    const prefix = isHomeRoasted ? '🔥 ' : '';
+    const rawLabel = prefix + bean.beanName;
+    const label = rawLabel.length > 18 ? rawLabel.slice(0, 17) + '…' : rawLabel;
     ctx.font = isSelected
       ? '700 11.5px "Noto Sans JP", sans-serif'
       : '600 11px "Noto Sans JP", sans-serif';
     const textW = ctx.measureText(label).width;
     const labelY = cy - radius - 10;
 
-    // ラベル背景ピル
     ctx.fillStyle = isSelected ? 'rgba(35, 25, 20, 0.92)' : 'rgba(253, 251, 247, 0.88)';
     ctx.beginPath();
     ctx.roundRect(cx - textW / 2 - 6, labelY - 9, textW + 12, 18, 5);
@@ -1121,6 +1604,70 @@ function drawFlavorMap() {
     ctx.fillText(label, cx, labelY);
   }
 
+  ctx.restore();
+}
+
+function drawBatchTrajectoryArrow(ctx, x1, y1, x2, y2, b1, b2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 24) return;
+
+  const ux = dx / dist;
+  const uy = dy / dist;
+  const startX = x1 + ux * 15;
+  const startY = y1 + uy * 15;
+  const endX = x2 - ux * 16;
+  const endY = y2 - uy * 16;
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(158, 61, 26, 0.72)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 3]);
+  ctx.beginPath();
+  ctx.moveTo(startX, startY);
+  ctx.lineTo(endX, endY);
+  ctx.stroke();
+
+  // 矢印の先端
+  ctx.setLineDash([]);
+  const headLen = 8;
+  const angle = Math.atan2(dy, dx);
+  ctx.fillStyle = 'rgba(158, 61, 26, 0.88)';
+  ctx.beginPath();
+  ctx.moveTo(endX, endY);
+  ctx.lineTo(
+    endX - headLen * Math.cos(angle - Math.PI / 6),
+    endY - headLen * Math.sin(angle - Math.PI / 6)
+  );
+  ctx.lineTo(
+    endX - headLen * Math.cos(angle + Math.PI / 6),
+    endY - headLen * Math.sin(angle + Math.PI / 6)
+  );
+  ctx.closePath();
+  ctx.fill();
+
+  // 中間地点に温度差・DTR差のミニバッジ
+  const midX = (startX + endX) / 2;
+  const midY = (startY + endY) / 2;
+  const dTemp = (b2.roastProfile.dropTemp - b1.roastProfile.dropTemp).toFixed(1);
+  const sign = Number(dTemp) >= 0 ? '+' : '';
+  const tag = `焙煎差 ${sign}${dTemp}℃`;
+
+  ctx.font = '600 9.5px "JetBrains Mono", monospace';
+  const tw = ctx.measureText(tag).width;
+  ctx.fillStyle = 'rgba(253, 237, 228, 0.92)';
+  ctx.beginPath();
+  ctx.roundRect(midX - tw / 2 - 5, midY - 8, tw + 10, 16, 4);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(158, 61, 26, 0.5)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.fillStyle = '#9e3d1a';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(tag, midX, midY);
   ctx.restore();
 }
 
@@ -1160,6 +1707,11 @@ function handleCanvasMouseMove(e) {
     }
     const xMeta = AXES_META[state.xAxis];
     const yMeta = AXES_META[state.yAxis];
+    const rp = hit.bean.roastProfile;
+    const roastExtra = rp
+      ? `<div style="font-size:0.7rem;color:#f5b895;margin-top:2px;">🔥 排出 ${rp.dropTemp}℃ / DTR ${rp.dtr}%</div>`
+      : '';
+
     els.mapTooltip.hidden = false;
     els.mapTooltip.style.left = `${hit.x}px`;
     els.mapTooltip.style.top = `${hit.y - 10}px`;
@@ -1167,8 +1719,9 @@ function handleCanvasMouseMove(e) {
       <div class="tooltip-title">${escapeHtml(hit.bean.beanName)}</div>
       <div class="tooltip-sub">${escapeHtml(hit.bean.origin)} / ${escapeHtml(hit.bean.roast)} / ${escapeHtml(hit.bean.process)} (${hit.bean.count}回平均)</div>
       <div class="tooltip-coords">
-        ${escapeHtml(xMeta.short)}: ${hit.rawX.toFixed(1)} ｜ ${escapeHtml(yMeta.short)}: ${hit.rawY.toFixed(1)} ｜ ★${hit.bean.avgRating}
+        ${escapeHtml(xMeta.short)}: ${hit.rawX.toFixed(1)}${xMeta.unit} ｜ ${escapeHtml(yMeta.short)}: ${hit.rawY.toFixed(1)}${yMeta.unit} ｜ ★${hit.bean.avgRating}
       </div>
+      ${roastExtra}
     `;
   } else {
     els.canvas.style.cursor = 'grab';
@@ -1190,7 +1743,7 @@ function handleCanvasClick() {
 }
 
 // ============================================================================
-// 右サイドバー：選択銘柄インスペクター＆6軸レーダーチャート
+// 右サイドバー：選択銘柄インスペクター（自家焙煎した銘柄のみ焙煎カーブ表示）
 // ============================================================================
 function renderInspector() {
   const beans = getAggregatedBeans();
@@ -1206,10 +1759,15 @@ function renderInspector() {
   els.inspectorContent.hidden = false;
 
   const roastColor = ROAST_COLORS[bean.roast] || '#6f4225';
+  const homeRoastBadge = bean.roastProfile?.isHomeRoasted
+    ? `<span class="badge badge-home-roast">🔥 自家焙煎</span>`
+    : '';
+
   els.inspectorBadges.innerHTML = `
     <span class="badge badge-origin">🌍 ${escapeHtml(bean.origin)}</span>
     <span class="badge badge-roast" style="background:${roastColor}">${escapeHtml(bean.roast)}</span>
     <span class="badge badge-process">${escapeHtml(bean.process)}</span>
+    ${homeRoastBadge}
   `;
 
   els.inspectorBeanName.textContent = bean.beanName;
@@ -1218,7 +1776,6 @@ function renderInspector() {
     <span>★ 平均お気に入り <strong>${bean.avgRating}</strong></span>
   `;
 
-  // 安定度バッジ
   if (bean.count === 1) {
     els.stabilityBadge.textContent = '記録1回（2回目以降でブレ表示）';
   } else if (bean.meanSd <= 0.55) {
@@ -1247,6 +1804,36 @@ function renderInspector() {
       `;
     })
     .join('');
+
+  // 🔥 条件分岐：自家焙煎した銘柄の場合のみ、焙煎プロファイル（Artisanカーブ＆スペック）を表示！
+  if (bean.roastProfile && bean.roastProfile.isHomeRoasted) {
+    els.inspectorRoastSection.hidden = false;
+    const rp = bean.roastProfile;
+    els.roastBatchBadge.textContent = rp.batchLabel || rp.sourceFile || 'Artisan Profile';
+    drawRoastCurveCanvas(rp);
+
+    els.inspectorRoastSpecs.innerHTML = `
+      <div class="roast-spec-pill">
+        <span class="roast-spec-label">排出温度</span>
+        <span class="roast-spec-val">${rp.dropTemp ?? '—'}℃</span>
+      </div>
+      <div class="roast-spec-pill">
+        <span class="roast-spec-label">DTR (発達率)</span>
+        <span class="roast-spec-val">${rp.dtr ?? '—'}%</span>
+      </div>
+      <div class="roast-spec-pill">
+        <span class="roast-spec-label">1ハゼ / 総時間</span>
+        <span class="roast-spec-val">${formatSecToMmSs(rp.fcsSec)} / ${formatSecToMmSs(rp.dropSec)}</span>
+      </div>
+      <div class="roast-spec-pill">
+        <span class="roast-spec-label">重量減少率</span>
+        <span class="roast-spec-val">${rp.weightLoss ?? '—'}%</span>
+      </div>
+    `;
+  } else {
+    // 通常の購入豆では完全に非表示にして画面をスッキリ保つ
+    els.inspectorRoastSection.hidden = true;
+  }
 
   // 履歴リスト
   els.historyCountTitle.textContent = `過去の記録履歴 (${bean.count}件)`;
@@ -1278,7 +1865,6 @@ function renderInspector() {
     })
     .join('');
 
-  // 編集・削除イベント
   els.inspectorHistoryList.querySelectorAll('[data-edit-id]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const id = btn.dataset.editId;
@@ -1297,6 +1883,166 @@ function renderInspector() {
       }
     });
   });
+}
+
+// Artisan 焙煎曲線キャンバス描画 (BT, ET, RoR, DTR帯)
+function drawRoastCurveCanvas(rp) {
+  const canvas = els.roastCurveCanvas;
+  const dpr = window.devicePixelRatio || 1;
+  const w = 350;
+  const h = 185;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = '100%';
+  canvas.style.height = 'auto';
+
+  const ctx = canvas.getContext('2d');
+  ctx.save();
+  ctx.scale(dpr, dpr);
+
+  const curve =
+    rp.curve && Array.isArray(rp.curve.timex) && rp.curve.timex.length > 2
+      ? rp.curve
+      : buildSyntheticRoastCurve(rp);
+
+  const pad = { top: 18, right: 32, bottom: 24, left: 34 };
+  const pw = w - pad.left - pad.right;
+  const ph = h - pad.top - pad.bottom;
+
+  const maxTime = Math.max(600, ...(curve.timex || [600]));
+  const minTemp = 80;
+  const maxTemp = 240;
+  const maxRor = 25;
+
+  const toX = (sec) => pad.left + (sec / maxTime) * pw;
+  const toYTemp = (temp) => pad.top + ph - ((temp - minTemp) / (maxTemp - minTemp)) * ph;
+  const toYRor = (rorVal) => pad.top + ph - (Math.max(0, Math.min(maxRor, rorVal)) / maxRor) * ph;
+
+  // 背景
+  ctx.fillStyle = '#231914';
+  ctx.fillRect(0, 0, w, h);
+
+  // 1ハゼ〜排出までの DTR 帯ハイライト
+  if (rp.fcsSec && rp.dropSec && rp.dropSec > rp.fcsSec) {
+    const xFcs = toX(rp.fcsSec);
+    const xDrop = toX(rp.dropSec);
+    ctx.fillStyle = 'rgba(217, 155, 56, 0.16)';
+    ctx.fillRect(xFcs, pad.top, xDrop - xFcs, ph);
+
+    ctx.fillStyle = '#f3c68f';
+    ctx.font = '600 9px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`DTR ${rp.dtr}%`, (xFcs + xDrop) / 2, pad.top + 11);
+  }
+
+  // 横グリッド線 (100, 150, 200℃)
+  for (const temp of [100, 150, 200]) {
+    const y = toYTemp(temp);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(pad.left + pw, y);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.font = '400 9px "JetBrains Mono", monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${temp}℃`, pad.left - 4, y + 3);
+  }
+
+  // 時間目盛り (2分ごと)
+  for (let m = 0; m <= Math.floor(maxTime / 60); m += 2) {
+    const sec = m * 60;
+    const x = toX(sec);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.font = '400 9px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${m}:00`, x, h - 6);
+  }
+
+  // ET (排気/環境温度) 破線
+  if (Array.isArray(curve.et) && curve.et.length === curve.timex.length) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(130, 180, 220, 0.55)';
+    ctx.lineWidth = 1.3;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    curve.timex.forEach((t, i) => {
+      const x = toX(t);
+      const y = toYTemp(curve.et[i]);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // RoR (上昇率 ℃/min) 曲線
+  if (Array.isArray(curve.ror)) {
+    ctx.save();
+    ctx.strokeStyle = '#63c59a';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let started = false;
+    curve.timex.forEach((t, i) => {
+      const rVal = curve.ror[i];
+      if (rVal === null || rVal === undefined || rVal < 0) return;
+      const x = toX(t);
+      const y = toYRor(rVal);
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // BT (豆温度) メイン曲線
+  ctx.save();
+  ctx.strokeStyle = '#f28b50';
+  ctx.lineWidth = 2.2;
+  ctx.beginPath();
+  curve.timex.forEach((t, i) => {
+    const x = toX(t);
+    const y = toYTemp(curve.bt[i]);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.restore();
+
+  // イベントマーカー (1ハゼ FCs / 排出 Drop)
+  const drawEventPin = (sec, temp, label, color) => {
+    if (!sec || !temp) return;
+    const x = toX(sec);
+    const y = toYTemp(temp);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = '600 8.5px "Noto Sans JP", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x, y - 7);
+  };
+
+  drawEventPin(rp.fcsSec, rp.fcsTemp, `1ハゼ ${rp.fcsTemp}℃`, '#ffd166');
+  drawEventPin(rp.dropSec, rp.dropTemp, `排出 ${rp.dropTemp}℃`, '#ff7b54');
+
+  // 凡例
+  ctx.font = '600 8.5px "JetBrains Mono", monospace';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#f28b50';
+  ctx.fillText('● BT(豆温度)', pad.left + 4, pad.top + 10);
+  ctx.fillStyle = '#63c59a';
+  ctx.fillText('● RoR(上昇率)', pad.left + 76, pad.top + 10);
+  ctx.fillStyle = 'rgba(130, 180, 220, 0.85)';
+  ctx.fillText('-- ET', pad.left + 154, pad.top + 10);
+
+  ctx.restore();
 }
 
 function drawRadarChart(bean) {
@@ -1327,7 +2073,6 @@ function drawRadarChart(bean) {
 
   ctx.clearRect(0, 0, w, h);
 
-  // 同心六角形グリッド (2, 4, 6, 8, 10)
   for (const step of [2, 4, 6, 8, 10]) {
     ctx.beginPath();
     keys.forEach((_, i) => {
@@ -1341,7 +2086,6 @@ function drawRadarChart(bean) {
     ctx.stroke();
   }
 
-  // 軸線とラベル
   keys.forEach((k, i) => {
     const outer = getPt(i, 10);
     ctx.beginPath();
@@ -1358,7 +2102,6 @@ function drawRadarChart(bean) {
     ctx.fillText(AXES_META[k].short, labelPt.x, labelPt.y);
   });
 
-  // 各回の記録をうっすら透過で重ね描き（ブレの可視化）
   if (bean.logs.length > 1) {
     for (const log of bean.logs) {
       ctx.beginPath();
@@ -1376,7 +2119,6 @@ function drawRadarChart(bean) {
     }
   }
 
-  // 平均プロファイル（太線）
   ctx.beginPath();
   keys.forEach((k, i) => {
     const pt = getPt(i, bean.avgScores[k]);
@@ -1390,7 +2132,6 @@ function drawRadarChart(bean) {
   ctx.lineWidth = 2.2;
   ctx.stroke();
 
-  // 頂点ドット
   keys.forEach((k, i) => {
     const pt = getPt(i, bean.avgScores[k]);
     ctx.beginPath();
@@ -1402,7 +2143,6 @@ function drawRadarChart(bean) {
   ctx.restore();
 }
 
-// 登録銘柄リストの描画
 function renderBeanCatalog() {
   const allBeans = getAggregatedBeans();
   const beans = getFilteredBeans(allBeans);
@@ -1425,10 +2165,11 @@ function renderBeanCatalog() {
     .map((b) => {
       const isSelected = b.beanName === state.selectedBeanName;
       const color = ROAST_COLORS[b.roast] || '#6f4225';
+      const fireIcon = b.roastProfile?.isHomeRoasted ? '🔥 ' : '';
       return `
         <div class="bean-row ${isSelected ? 'selected' : ''}" data-bean-name="${escapeHtml(b.beanName)}">
           <div class="bean-row-main">
-            <div class="bean-row-title">${escapeHtml(b.beanName)}</div>
+            <div class="bean-row-title">${fireIcon}${escapeHtml(b.beanName)}</div>
             <div class="bean-row-sub">
               <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color}"></span>
               <span>${escapeHtml(b.origin)} / ${escapeHtml(b.roast)}</span>
@@ -1454,13 +2195,12 @@ function renderBeanCatalog() {
 }
 
 // ============================================================================
-// モーダル（記録追加・2回目以降の自動補完）
+// モーダル（記録追加・2回目以降の自動補完・自家焙煎オプション）
 // ============================================================================
 function openLogModal(options = {}) {
   const { prefillBeanName, editLog } = options;
   const beans = getAggregatedBeans();
 
-  // 過去銘柄のセレクトボックスとDatalist更新
   els.existingBeanSelect.innerHTML =
     '<option value="">＋ 新しい銘柄として入力する / 直接入力</option>' +
     beans
@@ -1474,7 +2214,6 @@ function openLogModal(options = {}) {
     .map((b) => `<option value="${escapeHtml(b.beanName)}"></option>`)
     .join('');
 
-  // 産地Datalist＆クイックチップ更新（過去入力した産地を優先表示）
   const usedOrigins = Array.from(new Set(beans.map((b) => b.origin)));
   const allOrigins = Array.from(new Set([...usedOrigins, ...DEFAULT_ORIGINS]));
   els.originDatalist.innerHTML = allOrigins
@@ -1492,8 +2231,8 @@ function openLogModal(options = {}) {
     });
   });
 
-  // 今日の日付（ローカルタイム）
-  const todayStr = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
+  const todayStr = new Date().toLocaleDateString('sv-SE');
+  resetHomeRoastModalFields();
 
   if (editLog) {
     els.modalEyebrow.textContent = 'EDIT TASTING LOG';
@@ -1510,6 +2249,10 @@ function openLogModal(options = {}) {
     els.tempChangeSelect.value = editLog.tempNote || '変化なし・安定';
     els.memoInput.value = editLog.memo || '';
     els.sliderAutoFillNotice.textContent = '記録内容を編集しています';
+
+    if (editLog.roastProfile && editLog.roastProfile.isHomeRoasted) {
+      applyRoastProfileToModal(editLog.roastProfile);
+    }
   } else {
     els.modalEyebrow.textContent = 'DAILY CUP LOGGING';
     els.modalTitle.textContent = '今日の一杯を記録';
@@ -1544,6 +2287,24 @@ function openLogModal(options = {}) {
   els.logModalBackdrop.hidden = false;
 }
 
+function resetHomeRoastModalFields() {
+  els.isHomeRoastedCheckbox.checked = false;
+  els.homeRoastFormPanel.hidden = true;
+  els.baseGreenBeanInput.value = '';
+  els.batchLabelInput.value = '';
+  els.roastChargeTemp.value = '';
+  els.roastFcsTime.value = '';
+  els.roastFcsTemp.value = '';
+  els.roastDropTime.value = '';
+  els.roastDropTemp.value = '';
+  els.roastDtr.value = '';
+  els.roastWeightLoss.value = '';
+  state.currentModalCurve = null;
+  state.currentModalSourceFile = '';
+  els.alogStatusText.textContent =
+    '温度曲線（BT/ET/RoR）・1ハゼ・排出温度・DTR(%)・重量減少率を自動抽出します';
+}
+
 function applyBeanAutoFill(beanName) {
   const beans = getAggregatedBeans();
   const found = beans.find((b) => b.beanName === beanName);
@@ -1554,7 +2315,6 @@ function applyBeanAutoFill(beanName) {
   els.roastSelect.value = found.roast;
   els.processSelect.value = found.process;
 
-  // 前回までの平均スコアを四捨五入して初期値にセット（微調整しやすくする）
   const rounded = {};
   for (const [k, v] of Object.entries(found.avgScores)) {
     rounded[k] = Math.round(v);
@@ -1562,6 +2322,12 @@ function applyBeanAutoFill(beanName) {
   setSlidersValues(rounded);
   setStarRating(Math.round(found.avgRating));
   els.sliderAutoFillNotice.innerHTML = `<strong style="color:#6f4225">✓ 過去${found.count}回の記録から産地・焙煎度・平均スコアを自動セットしました。</strong> 今日の感覚に合わせて微調整してください。`;
+
+  if (found.roastProfile && found.roastProfile.isHomeRoasted) {
+    applyRoastProfileToModal(found.roastProfile);
+  } else {
+    resetHomeRoastModalFields();
+  }
 }
 
 function setSlidersValues(scores) {
@@ -1590,6 +2356,52 @@ function handleFormSubmit(e) {
   const origin = els.originInput.value.trim() || '不明';
   if (!beanName) return;
 
+  let roastProfile = null;
+  if (els.isHomeRoastedCheckbox.checked) {
+    const chargeTemp = Number(els.roastChargeTemp.value || 195);
+    const fcsSec = parseMmSsToSec(els.roastFcsTime.value || '07:50');
+    const fcsTemp = Number(els.roastFcsTemp.value || 196);
+    const dropSec = parseMmSsToSec(els.roastDropTime.value || '09:30');
+    const dropTemp = Number(els.roastDropTemp.value || 206);
+    const dtr = Number(
+      els.roastDtr.value ||
+        (dropSec > fcsSec ? (((dropSec - fcsSec) / dropSec) * 100).toFixed(1) : 16.0)
+    );
+    const weightLoss = Number(els.roastWeightLoss.value || 14.5);
+    const baseGreenBean =
+      els.baseGreenBeanInput.value.trim() || beanName.replace(/\s*\[.*\]$/, '').trim();
+    const batchLabel =
+      els.batchLabelInput.value.trim() || `排出 ${dropTemp}℃ / DTR ${dtr}%`;
+
+    roastProfile = {
+      isHomeRoasted: true,
+      baseGreenBean,
+      batchLabel,
+      roastDate: els.logDateInput.value,
+      chargeTemp,
+      tpTimeSec: 80,
+      tpTemp: 102,
+      dryEndSec: Math.round(fcsSec * 0.57),
+      dryEndTemp: 152,
+      fcsSec,
+      fcsTemp,
+      dropSec,
+      dropTemp,
+      dtr,
+      weightLoss,
+      sourceFile: state.currentModalSourceFile || '',
+      curve:
+        state.currentModalCurve ||
+        buildSyntheticRoastCurve({
+          chargeTemp,
+          fcsSec,
+          fcsTemp,
+          dropSec,
+          dropTemp,
+        }),
+    };
+  }
+
   const newLog = {
     id: els.editLogId.value || `log-${Date.now()}`,
     beanName,
@@ -1608,6 +2420,7 @@ function handleFormSubmit(e) {
     rating: Number(els.ratingInput.value || 4),
     tempNote: els.tempChangeSelect.value,
     memo: els.memoInput.value.trim(),
+    roastProfile,
   };
 
   if (els.editLogId.value) {
@@ -1624,7 +2437,7 @@ function handleFormSubmit(e) {
 }
 
 // ============================================================================
-// JSON エクスポート・インポート
+// JSON エクスポート・インポート ＆ ユーティリティ
 // ============================================================================
 function exportJsonData() {
   const dataStr = JSON.stringify(state.logs, null, 2);
@@ -1660,7 +2473,23 @@ function importJsonData(e) {
   reader.readAsText(file);
 }
 
-// ユーティリティ
+function formatSecToMmSs(sec) {
+  if (!sec || Number.isNaN(Number(sec))) return '—';
+  const total = Math.max(0, Math.round(Number(sec)));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function parseMmSsToSec(str) {
+  if (!str) return 0;
+  const parts = String(str).trim().split(':');
+  if (parts.length === 2) {
+    return Number(parts[0]) * 60 + Number(parts[1]);
+  }
+  return Number(str) || 0;
+}
+
 function escapeHtml(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')

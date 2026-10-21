@@ -658,6 +658,186 @@ body {
   font-weight: 400;
 }
 
+/* Home-Roasted / Artisan Inspector Section (Hidden unless bean is home-roasted) */
+.roast-inspector-section {
+  border-top: 1px dashed var(--border-strong);
+  padding-top: 0.75rem;
+  margin-bottom: 0.9rem;
+}
+
+.roast-subtitle {
+  color: #9e3d1a;
+}
+
+.roast-batch-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  background: #fdede4;
+  color: #9e3d1a;
+  border: 1px solid #ecc1ab;
+}
+
+.roast-curve-box {
+  background: #231914;
+  border: 1px solid #4a372b;
+  border-radius: var(--radius-sm);
+  padding: 0.35rem;
+  margin-bottom: 0.5rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.roast-specs-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.35rem;
+}
+
+.roast-spec-pill {
+  background: #f8efe6;
+  border: 1px solid #e4cfb8;
+  border-radius: 6px;
+  padding: 0.28rem 0.45rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.roast-spec-label {
+  font-size: 0.63rem;
+  color: var(--text-secondary);
+}
+
+.roast-spec-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #7c3215;
+}
+
+.badge-home-roast {
+  background: #fdede4;
+  color: #9e3d1a;
+  border: 1px solid #e6b8a2;
+}
+
+/* Modal Home-Roast Accordion */
+.home-roast-accordion {
+  border: 1px solid #dfc8ad;
+  border-radius: var(--radius-md);
+  background: #fcf7f0;
+  overflow: hidden;
+}
+
+.home-roast-toggle-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.65rem 0.9rem;
+  cursor: pointer;
+  user-select: none;
+  background: #f6ede0;
+}
+
+.home-roast-toggle-bar input[type="checkbox"] {
+  accent-color: #9e3d1a;
+  width: 16px;
+  height: 16px;
+}
+
+.home-roast-toggle-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #6b2f15;
+  flex: 1;
+}
+
+.home-roast-optional-tag {
+  font-size: 0.68rem;
+  font-weight: 600;
+  background: #fff;
+  color: var(--text-muted);
+  border: 1px solid var(--border-light);
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+}
+
+.home-roast-panel {
+  padding: 0.85rem 0.95rem;
+  border-top: 1px dashed #dfc8ad;
+}
+
+.alog-dropzone {
+  border: 1.5px dashed #c89666;
+  background: #fffaf3;
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.85rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  transition: all 0.15s ease;
+}
+
+.alog-dropzone.dragover {
+  background: #fdede4;
+  border-color: #9e3d1a;
+}
+
+.alog-drop-main {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.alog-icon {
+  font-size: 1.4rem;
+}
+
+.alog-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.alog-sub {
+  font-size: 0.71rem;
+  color: var(--text-secondary);
+}
+
+.alog-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.roast-metrics-inputs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.6rem;
+  margin-top: 0.65rem;
+}
+
+@media (max-width: 640px) {
+  .roast-metrics-inputs {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.roast-metrics-inputs input {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.82rem;
+  padding: 0.38rem 0.55rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-main);
+  width: 100%;
+}
+
 /* History List */
 .history-list {
   display: flex;

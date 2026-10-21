@@ -74,6 +74,13 @@
             <button class="preset-pill" data-x="acidity" data-y="sweetness">
               フルーティ × 甘み
             </button>
+            <!-- 自家焙煎データが存在する時だけ表示されるプリセット -->
+            <button class="preset-pill preset-roast-only" data-x="roast_dropTemp" data-y="bitterness" hidden>
+              🔥 排出温度 × ビター
+            </button>
+            <button class="preset-pill preset-roast-only" data-x="roast_dtr" data-y="sweetness" hidden>
+              🔥 DTR(発達率) × 甘み
+            </button>
           </div>
         </div>
 
@@ -81,13 +88,21 @@
           <div class="axis-select-group">
             <label for="xAxisSelect">横軸 (X):</label>
             <select id="xAxisSelect" class="select-input">
-              <option value="acidity" selected>酸味・フルーティ (1〜10)</option>
-              <option value="bitterness">苦味・ビター (1〜10)</option>
-              <option value="sweetness">甘み (1〜10)</option>
-              <option value="body">コク・ボディ (1〜10)</option>
-              <option value="aroma">香り・華やかさ (1〜10)</option>
-              <option value="aftertaste">余韻・後味 (1:キレ ⇔ 10:余韻長)</option>
-              <option value="balance_ab">【合成軸】酸味(1) ⇔ 苦味(10)</option>
+              <optgroup label="☕ 味覚スコア (1〜10)">
+                <option value="acidity" selected>酸味・フルーティ (1〜10)</option>
+                <option value="bitterness">苦味・ビター (1〜10)</option>
+                <option value="sweetness">甘み (1〜10)</option>
+                <option value="body">コク・ボディ (1〜10)</option>
+                <option value="aroma">香り・華やかさ (1〜10)</option>
+                <option value="aftertaste">余韻・後味 (1:キレ ⇔ 10:余韻長)</option>
+                <option value="balance_ab">【合成軸】酸味(1) ⇔ 苦味(10)</option>
+              </optgroup>
+              <optgroup label="🔥 自家焙煎・Artisan指標" id="xAxisRoastGroup" hidden>
+                <option value="roast_dropTemp">🔥 排出温度 Drop Temp (℃)</option>
+                <option value="roast_dtr">🔥 DTR 発達時間比率 (%)</option>
+                <option value="roast_time">🔥 総焙煎時間 (分)</option>
+                <option value="roast_loss">🔥 重量減少率 (%)</option>
+              </optgroup>
             </select>
           </div>
 
@@ -98,13 +113,21 @@
           <div class="axis-select-group">
             <label for="yAxisSelect">縦軸 (Y):</label>
             <select id="yAxisSelect" class="select-input">
-              <option value="acidity">酸味・フルーティ (1〜10)</option>
-              <option value="bitterness" selected>苦味・ビター (1〜10)</option>
-              <option value="sweetness">甘み (1〜10)</option>
-              <option value="body">コク・ボディ (1〜10)</option>
-              <option value="aroma">香り・華やかさ (1〜10)</option>
-              <option value="aftertaste">余韻・後味 (1:キレ ⇔ 10:余韻長)</option>
-              <option value="balance_ab">【合成軸】酸味(1) ⇔ 苦味(10)</option>
+              <optgroup label="☕ 味覚スコア (1〜10)">
+                <option value="acidity">酸味・フルーティ (1〜10)</option>
+                <option value="bitterness" selected>苦味・ビター (1〜10)</option>
+                <option value="sweetness">甘み (1〜10)</option>
+                <option value="body">コク・ボディ (1〜10)</option>
+                <option value="aroma">香り・華やかさ (1〜10)</option>
+                <option value="aftertaste">余韻・後味 (1:キレ ⇔ 10:余韻長)</option>
+                <option value="balance_ab">【合成軸】酸味(1) ⇔ 苦味(10)</option>
+              </optgroup>
+              <optgroup label="🔥 自家焙煎・Artisan指標" id="yAxisRoastGroup" hidden>
+                <option value="roast_dropTemp">🔥 排出温度 Drop Temp (℃)</option>
+                <option value="roast_dtr">🔥 DTR 発達時間比率 (%)</option>
+                <option value="roast_time">🔥 総焙煎時間 (分)</option>
+                <option value="roast_loss">🔥 重量減少率 (%)</option>
+              </optgroup>
             </select>
           </div>
 
@@ -128,6 +151,11 @@
             <label class="toggle-chip" title="お気に入り度が高い銘柄の周辺にスイートスポット（好まれる領域）を表示します">
               <input type="checkbox" id="showSweetSpotToggle" checked />
               <span>好みゾーン表示</span>
+            </label>
+            <!-- 自家焙煎バッチ比較がある時だけ表示 -->
+            <label class="toggle-chip toggle-roast-only" id="batchTrajectoryToggleWrap" title="同じ生豆を異なるプロファイルで焼いたバッチ間の味の変化を矢印で結びます" hidden>
+              <input type="checkbox" id="showBatchLinksToggle" checked />
+              <span>🔥 同一生豆のバッチ軌跡</span>
             </label>
           </div>
         </div>
@@ -166,7 +194,7 @@
         <!-- Floating Tooltip on Hover -->
         <div id="mapTooltip" class="map-tooltip" hidden></div>
         <div class="map-footer-hint">
-          <span>💡 丸いプロットは<strong>複数回記録の平均位置</strong>、うっすら見える小さな点と楕円は<strong>日ごとの評価のブレ範囲</strong>です。クリックで詳細・再記録へ。</span>
+          <span>💡 丸いプロットは<strong>複数回記録の平均位置</strong>、うっすら見える点と楕円は<strong>日ごとの評価のブレ範囲</strong>です。クリックで詳細・再記録へ。</span>
         </div>
       </div>
     </section>
@@ -201,9 +229,21 @@
               <span id="stabilityBadge" class="stability-badge"></span>
             </div>
             <div class="radar-canvas-box">
-              <canvas id="radarCanvas" width="280" height="240"></canvas>
+              <canvas id="radarCanvas" width="280" height="230"></canvas>
             </div>
             <div class="score-pills-grid" id="inspectorScoreGrid"></div>
+          </div>
+
+          <!-- 🔥 自家焙煎した銘柄のときだけ表示される Artisan プロファイルセクション -->
+          <div id="inspectorRoastSection" class="roast-inspector-section" hidden>
+            <div class="section-subtitle-row">
+              <span class="section-subtitle roast-subtitle">🔥 自家焙煎プロファイル (Artisan)</span>
+              <span id="roastBatchBadge" class="roast-batch-badge"></span>
+            </div>
+            <div class="roast-curve-box">
+              <canvas id="roastCurveCanvas" width="350" height="185"></canvas>
+            </div>
+            <div class="roast-specs-grid" id="inspectorRoastSpecs"></div>
           </div>
 
           <!-- Past Logs History for this Bean -->
@@ -272,7 +312,7 @@
           </div>
 
           <div class="form-field">
-            <label for="logDateInput">日付 <span class="req">*</span></label>
+            <label for="logDateInput">飲んだ日付 <span class="req">*</span></label>
             <input type="date" id="logDateInput" required />
           </div>
         </div>
@@ -312,6 +352,88 @@
               <option value="アナエロビック">アナエロビック (嫌気性発酵)</option>
               <option value="その他">その他・ブレンド・不明</option>
             </select>
+          </div>
+        </div>
+
+        <!-- 🔥 自家焙煎 / Artisan プロファイル記録オプション（チェックした時だけ展開） -->
+        <div class="home-roast-accordion">
+          <label class="home-roast-toggle-bar">
+            <input type="checkbox" id="isHomeRoastedCheckbox" />
+            <span class="home-roast-toggle-title">🔥 自家焙煎した豆として記録する（Artisan `.alog` 読込 / 焙煎プロファイル記録）</span>
+            <span class="home-roast-optional-tag">自家焙煎時のみON</span>
+          </label>
+
+          <div id="homeRoastFormPanel" class="home-roast-panel" hidden>
+            <!-- .alog ファイルドラッグ＆ドロップ or 選択 -->
+            <div class="alog-dropzone" id="alogDropzone">
+              <div class="alog-drop-main">
+                <span class="alog-icon">📈</span>
+                <div>
+                  <div class="alog-title">Artisan の <code>.alog</code> ファイルをここにドロップ、またはファイルを選択</div>
+                  <div class="alog-sub" id="alogStatusText">温度曲線（BT/ET/RoR）・1ハゼ・排出温度・DTR(%)・重量減少率を自動抽出します</div>
+                </div>
+              </div>
+              <div class="alog-actions">
+                <label class="btn btn-ghost btn-sm file-label">
+                  .alog を選択
+                  <input type="file" id="alogFileInput" accept=".alog,.json,.txt" hidden />
+                </label>
+                <button type="button" id="fillDemoAlogBtn" class="btn btn-ghost btn-sm" title="Artisanファイルがなくても試せるデモ波形をセットします">
+                  サンプル波形をセット
+                </button>
+              </div>
+            </div>
+
+            <!-- 同一生豆のバッチ比較用＆主要焙煎数値 -->
+            <div class="form-grid-2" style="margin-top:0.65rem;">
+              <div class="form-field">
+                <label for="baseGreenBeanInput">比較用の生豆グループ名（同じ生豆の別バッチ比較用）</label>
+                <input
+                  type="text"
+                  id="baseGreenBeanInput"
+                  placeholder="例：エチオピア イルガチェフェ コンガ G1"
+                />
+              </div>
+              <div class="form-field">
+                <label for="batchLabelInput">バッチ識別ラベル（任意）</label>
+                <input
+                  type="text"
+                  id="batchLabelInput"
+                  placeholder="例：Batch #1 中浅煎り (204℃排出)"
+                />
+              </div>
+            </div>
+
+            <div class="roast-metrics-inputs">
+              <div class="form-field">
+                <label for="roastChargeTemp">投入温度 (℃)</label>
+                <input type="number" step="0.1" id="roastChargeTemp" placeholder="195" />
+              </div>
+              <div class="form-field">
+                <label for="roastFcsTime">1ハゼ開始 (分:秒)</label>
+                <input type="text" id="roastFcsTime" placeholder="07:50" />
+              </div>
+              <div class="form-field">
+                <label for="roastFcsTemp">1ハゼ温度 (℃)</label>
+                <input type="number" step="0.1" id="roastFcsTemp" placeholder="196" />
+              </div>
+              <div class="form-field">
+                <label for="roastDropTime">排出時間 (分:秒)</label>
+                <input type="text" id="roastDropTime" placeholder="09:30" />
+              </div>
+              <div class="form-field">
+                <label for="roastDropTemp">排出温度 (℃)</label>
+                <input type="number" step="0.1" id="roastDropTemp" placeholder="206.5" />
+              </div>
+              <div class="form-field">
+                <label for="roastDtr">DTR 発達率 (%)</label>
+                <input type="number" step="0.1" id="roastDtr" placeholder="自動計算" />
+              </div>
+              <div class="form-field">
+                <label for="roastWeightLoss">重量減少率 (%)</label>
+                <input type="number" step="0.1" id="roastWeightLoss" placeholder="14.5" />
+              </div>
+            </div>
           </div>
         </div>
 
